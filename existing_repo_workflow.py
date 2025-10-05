@@ -1842,11 +1842,23 @@ class ExistingRepoWorkflow:
             # Don't raise - this is a cleanup operation, shouldn't stop the main process
     
     def _update_documentation_with_llm(self, docs_client, docs_provider, repo_config, files_to_update, commit_info, llm_service, rag_service):
-        """Update documentation using LLM + RAG enhanced processing."""
+        """Update documentation using section-level editing with formatting preservation."""
         try:
-            logger.info("🤖 Updating documentation with LLM + RAG...")
+            logger.info("🤖 Updating documentation with section-level editing...")
             
-            # Services are already initialized and passed as parameters
+            # Import document handlers
+            from utils.document_handlers import get_document_handler, is_supported_file_type
+            from utils.docx_handler import DOCXHandler
+            from utils.register_handlers import DocumentHandlerFactory
+            
+            # Register handlers
+            from utils.excel_handler import ExcelSectionHandler
+            from utils.csv_handler import CSVSectionHandler
+            from utils.markdown_section_handler import MarkdownSectionHandler
+            
+            DocumentHandlerFactory.register_handler(ExcelSectionHandler())
+            DocumentHandlerFactory.register_handler(CSVSectionHandler())
+            DocumentHandlerFactory.register_handler(MarkdownSectionHandler())
             
             updated_files = []
             failed_files = []
@@ -1854,80 +1866,41 @@ class ExistingRepoWorkflow:
             # Process each selected file for updates
             for file_path in files_to_update:
                 try:
-                    logger.info(f"📝 Processing file: {file_path}")
+                    logger.info(f"📝 Processing file with section-level editing: {file_path}")
                     
-                    # Get current document content
-                    current_content = rag_service.get_document_content(file_path)
-                    if not current_content:
-                        logger.warning(f"⚠️ Could not retrieve content for {file_path}")
+                    # Get original file content as bytes
+                    original_bytes = self._get_original_file_content(file_path, repo_config)
+                    if not original_bytes:
+                        logger.warning(f"⚠️ Could not retrieve original content for {file_path}")
                         failed_files.append(file_path)
                         continue
                     
-                    # Store original content for DOCX files
-                    original_content = None
-                    if file_path.lower().endswith('.docx'):
-                        # For DOCX files, we need the original binary content
-                        try:
-                            # Get original binary content from GitLab
-                            original_content = self._get_original_docx_content(file_path, repo_config)
-                        except Exception as e:
-                            logger.warning(f"⚠️ Could not get original DOCX content for {file_path}: {str(e)}")
-                            original_content = None
-                    
-                    # Note: Full backup already created above, no need for individual file backups
-                    
-                    # Prepare commit context for LLM
-                    commit_context = {
-                        'message': commit_info['message'],
-                        'author': commit_info['author'],
-                        'modified': commit_info['modified'],
-                        'diff': commit_info.get('diff', ''),
-                        'analysis': commit_info.get('analysis', {}),
-                        'rag_context': commit_info.get('rag_context', '')
-                    }
-                    
-                    # Generate updated content using LLM
-                    updated_content = llm_service.generate_documentation_update(
-                        current_content, commit_context, commit_context.get('rag_context', '')
-                    )
-                    
-                    # Update the file in GitLab
-                    gitlab_commit_data = {
-                        'commit_hash': commit_info['hash'],
-                        'commit_message': commit_info['message'],
-                        'author': commit_info['author'],
-                        'timestamp': commit_info['timestamp'],
-                        'repository_url': repo_config.get('code_repo_url', repo_config.get('github_repo_url', ''))
-                    }
-                    
-                    # Use GitLab client to update the file
-                    # For DOCX files, pass the original content for proper formatting
-                    if file_path.lower().endswith('.docx'):
-                        # Convert updated text to DOCX bytes
-                        from utils.docx_handler import DOCXHandler
-                        if original_content:
-                            updated_docx_bytes = DOCXHandler.update_docx_content(original_content, updated_content)
-                        else:
-                            updated_docx_bytes = DOCXHandler.create_docx_from_text(updated_content, "Updated Document")
-                        
-                        if docs_client.update_single_documentation_file(
-                            file_path, updated_docx_bytes, gitlab_commit_data
-                        ):
-                            updated_files.append(file_path)
-                            logger.info(f"✅ Updated DOCX {file_path} with LLM-generated content")
-                        else:
-                            failed_files.append(file_path)
-                            logger.error(f"❌ Failed to update DOCX {file_path} in {docs_provider.upper()}")
+                    # Check if file type is supported for section-level editing
+                    if is_supported_file_type(file_path):
+                        # Use section-level editing
+                        success = self._update_file_with_sections(
+                            file_path, original_bytes, commit_info, llm_service, 
+                            rag_service, docs_client, docs_provider, repo_config
+                        )
+                    elif file_path.lower().endswith('.docx'):
+                        # Use enhanced DOCX handler
+                        success = self._update_docx_with_sections(
+                            file_path, original_bytes, commit_info, llm_service, 
+                            rag_service, docs_client, docs_provider, repo_config
+                        )
                     else:
-                        # Handle text files normally
-                        if docs_client.update_single_documentation_file(
-                            file_path, updated_content, gitlab_commit_data
-                        ):
-                            updated_files.append(file_path)
-                            logger.info(f"✅ Updated {file_path} with LLM-generated content")
-                        else:
-                            failed_files.append(file_path)
-                            logger.error(f"❌ Failed to update {file_path} in {docs_provider.upper()}")
+                        # Fallback to original method for unsupported files
+                        success = self._update_file_legacy(
+                            file_path, commit_info, llm_service, rag_service, 
+                            docs_client, docs_provider, repo_config
+                        )
+                    
+                    if success:
+                        updated_files.append(file_path)
+                        logger.info(f"✅ Updated {file_path} with section-level editing")
+                    else:
+                        failed_files.append(file_path)
+                        logger.error(f"❌ Failed to update {file_path}")
                         
                 except Exception as e:
                     logger.error(f"❌ Error processing {file_path}: {str(e)}")
@@ -1944,13 +1917,21 @@ class ExistingRepoWorkflow:
             else:
                 return {
                     "success": False,
-                    "error": f"Failed to update any files. Failed: {failed_files}",
-                    "failed_files": failed_files
+                    "updated_files": [],
+                    "failed_files": failed_files,
+                    "total_updated": 0,
+                    "error": "No files were successfully updated"
                 }
                 
         except Exception as e:
-            logger.error(f"❌ LLM documentation update failed: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"[ERROR] Section-level documentation update failed: {str(e)}")
+            return {
+                "success": False,
+                "updated_files": [],
+                "failed_files": files_to_update,
+                "total_updated": 0,
+                "error": str(e)
+            }
     
     def _get_original_docx_content(self, file_path: str, repo_config: dict) -> bytes | None:
         """Get original DOCX content from repository (GitHub or GitLab)."""
@@ -2792,6 +2773,200 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
             debug=False,
             threaded=True
         )
+
+    def _update_file_with_sections(self, file_path: str, original_bytes: bytes, 
+                                 commit_info: Dict[str, Any], llm_service, rag_service, 
+                                 docs_client, docs_provider: str, repo_config: Dict[str, Any]) -> bool:
+        """Update file using section-level editing."""
+        try:
+            from utils.document_handlers import get_document_handler
+            
+            # Get appropriate handler
+            handler = get_document_handler(file_path)
+            if not handler:
+                logger.error(f"[ERROR] No handler found for {file_path}")
+                return False
+            
+            # Extract document structure
+            document_structure = handler.extract_content_with_structure(original_bytes)
+            if 'error' in document_structure:
+                logger.error(f"[ERROR] Failed to extract structure: {document_structure['error']}")
+                return False
+            
+            # Prepare commit context
+            commit_context = {
+                'message': commit_info['message'],
+                'author': commit_info['author'],
+                'modified': commit_info['modified'],
+                'diff': commit_info.get('diff', ''),
+                'analysis': commit_info.get('analysis', {}),
+                'rag_context': commit_info.get('rag_context', '')
+            }
+            
+            # Get RAG context
+            rag_context = rag_service.get_document_content(file_path) or ""
+            
+            # Identify sections to update
+            updates = llm_service.identify_document_sections_to_update(
+                document_structure, commit_context, rag_context
+            )
+            
+            if not updates:
+                logger.info(f"[INFO] No sections need updating for {file_path}")
+                return True  # No updates needed, consider success
+            
+            # Apply section updates
+            updated_bytes = handler.apply_section_updates(original_bytes, updates)
+            
+            # Update file in GitLab/GitHub
+            gitlab_commit_data = {
+                'commit_hash': commit_info['hash'],
+                'commit_message': commit_info['message'],
+                'author': commit_info['author'],
+                'timestamp': commit_info['timestamp'],
+                'repository_url': repo_config.get('code_repo_url', repo_config.get('github_repo_url', ''))
+            }
+            
+            # Update the file
+            if docs_client.update_single_documentation_file(
+                file_path, updated_bytes, gitlab_commit_data
+            ):
+                logger.info(f"[SUCCESS] Updated {file_path} with {len(updates)} section updates")
+                return True
+            else:
+                logger.error(f"[ERROR] Failed to update {file_path} in {docs_provider.upper()}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[ERROR] Section-level update failed for {file_path}: {str(e)}")
+            return False
+    
+    def _update_docx_with_sections(self, file_path: str, original_bytes: bytes, 
+                                 commit_info: Dict[str, Any], llm_service, rag_service, 
+                                 docs_client, docs_provider: str, repo_config: Dict[str, Any]) -> bool:
+        """Update DOCX file using section-level editing."""
+        try:
+            from utils.docx_handler import DOCXHandler
+            
+            # Extract DOCX structure
+            document_structure = DOCXHandler.extract_document_structure(original_bytes)
+            if 'error' in document_structure:
+                logger.error(f"[ERROR] Failed to extract DOCX structure: {document_structure['error']}")
+                return False
+            
+            # Prepare commit context
+            commit_context = {
+                'message': commit_info['message'],
+                'author': commit_info['author'],
+                'modified': commit_info['modified'],
+                'diff': commit_info.get('diff', ''),
+                'analysis': commit_info.get('analysis', {}),
+                'rag_context': commit_info.get('rag_context', '')
+            }
+            
+            # Get RAG context
+            rag_context = rag_service.get_document_content(file_path) or ""
+            
+            # Identify sections to update
+            updates = llm_service.identify_document_sections_to_update(
+                document_structure, commit_context, rag_context
+            )
+            
+            if not updates:
+                logger.info(f"[INFO] No sections need updating for DOCX {file_path}")
+                return True  # No updates needed, consider success
+            
+            # Apply targeted updates
+            updated_bytes = DOCXHandler.apply_targeted_updates(original_bytes, updates)
+            
+            # Update file in GitLab/GitHub
+            gitlab_commit_data = {
+                'commit_hash': commit_info['hash'],
+                'commit_message': commit_info['message'],
+                'author': commit_info['author'],
+                'timestamp': commit_info['timestamp'],
+                'repository_url': repo_config.get('code_repo_url', repo_config.get('github_repo_url', ''))
+            }
+            
+            # Update the file
+            if docs_client.update_single_documentation_file(
+                file_path, updated_bytes, gitlab_commit_data
+            ):
+                logger.info(f"[SUCCESS] Updated DOCX {file_path} with {len(updates)} section updates")
+                return True
+            else:
+                logger.error(f"[ERROR] Failed to update DOCX {file_path} in {docs_provider.upper()}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[ERROR] DOCX section-level update failed for {file_path}: {str(e)}")
+            return False
+    
+    def _update_file_legacy(self, file_path: str, commit_info: Dict[str, Any], 
+                           llm_service, rag_service, docs_client, docs_provider: str, 
+                           repo_config: Dict[str, Any]) -> bool:
+        """Fallback to legacy update method for unsupported files."""
+        try:
+            logger.info(f"[INFO] Using legacy update method for {file_path}")
+            
+            # Get current document content
+            current_content = rag_service.get_document_content(file_path)
+            if not current_content:
+                logger.warning(f"⚠️ Could not retrieve content for {file_path}")
+                return False
+            
+            # Prepare commit context for LLM
+            commit_context = {
+                'message': commit_info['message'],
+                'author': commit_info['author'],
+                'modified': commit_info['modified'],
+                'diff': commit_info.get('diff', ''),
+                'analysis': commit_info.get('analysis', {}),
+                'rag_context': commit_info.get('rag_context', '')
+            }
+            
+            # Generate updated content using LLM
+            updated_content = llm_service.generate_documentation_update(
+                current_content, commit_context, commit_context.get('rag_context', '')
+            )
+            
+            # Update the file in GitLab/GitHub
+            gitlab_commit_data = {
+                'commit_hash': commit_info['hash'],
+                'commit_message': commit_info['message'],
+                'author': commit_info['author'],
+                'timestamp': commit_info['timestamp'],
+                'repository_url': repo_config.get('code_repo_url', repo_config.get('github_repo_url', ''))
+            }
+            
+            # Handle text files normally
+            if docs_client.update_single_documentation_file(
+                file_path, updated_content, gitlab_commit_data
+            ):
+                logger.info(f"✅ Updated {file_path} with legacy method")
+                return True
+            else:
+                logger.error(f"❌ Failed to update {file_path} in {docs_provider.upper()}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[ERROR] Legacy update failed for {file_path}: {str(e)}")
+            return False
+    
+    def _get_original_file_content(self, file_path: str, repo_config: Dict[str, Any]) -> Optional[bytes]:
+        """Get original file content as bytes."""
+        try:
+            # Use the existing _get_original_docx_content method for DOCX files
+            if file_path.lower().endswith('.docx'):
+                return self._get_original_docx_content(file_path, repo_config)
+            
+            # For other file types, we need to implement similar logic
+            # This is a placeholder that should be enhanced
+            logger.warning(f"[WARNING] _get_original_file_content not fully implemented for {file_path}")
+            return None
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to get original content for {file_path}: {str(e)}")
+            return None
 
 if __name__ == "__main__":
     server = ExistingRepoWorkflow()

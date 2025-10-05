@@ -952,3 +952,368 @@ Return ONLY the JSON, no other text.
             File extension (e.g., '.docx', '.md')
         """
         return file_path.lower().split('.')[-1] if '.' in file_path else ''
+    
+    # =============================================================================
+    # SECTION-LEVEL EDITING METHODS
+    # =============================================================================
+    
+    @staticmethod
+    def extract_document_structure(docx_bytes: bytes) -> Dict[str, Any]:
+        """
+        Extract DOCX document structure with section IDs for targeted editing.
+        
+        Args:
+            docx_bytes: Raw DOCX file content as bytes
+            
+        Returns:
+            Dictionary containing document structure with paragraphs, tables, and metadata
+        """
+        try:
+            doc = Document(io.BytesIO(docx_bytes))
+            
+            structure = {
+                'file_type': 'docx',
+                'paragraphs': [],
+                'tables': [],
+                'headings': [],
+                'total_paragraphs': len(doc.paragraphs),
+                'total_tables': len(doc.tables)
+            }
+            
+            # Extract paragraphs with IDs and formatting
+            for i, paragraph in enumerate(doc.paragraphs):
+                if paragraph.text.strip():  # Skip empty paragraphs
+                    para_info = {
+                        'paragraph_id': f"para_{i}",
+                        'index': i,
+                        'text': paragraph.text,
+                        'formatted_text': paragraph.text,
+                        'style': paragraph.style.name if paragraph.style else None,
+                        'is_heading': False,
+                        'heading_level': 0,
+                        'formatting': DOCXHandler._extract_paragraph_formatting(paragraph)
+                    }
+                    
+                    # Check if it's a heading
+                    if paragraph.style and 'heading' in paragraph.style.name.lower():
+                        para_info['is_heading'] = True
+                        para_info['heading_level'] = int(paragraph.style.name.split()[-1]) if paragraph.style.name.split()[-1].isdigit() else 1
+                        structure['headings'].append(para_info)
+                    
+                    structure['paragraphs'].append(para_info)
+            
+            # Extract tables with IDs and structure
+            for i, table in enumerate(doc.tables):
+                table_info = {
+                    'table_id': f"table_{i}",
+                    'index': i,
+                    'rows': len(table.rows),
+                    'columns': len(table.columns) if table.rows else 0,
+                    'cells': [],
+                    'style': table.style.name if table.style else None
+                }
+                
+                # Extract cell information
+                for row_idx, row in enumerate(table.rows):
+                    for col_idx, cell in enumerate(row.cells):
+                        cell_info = {
+                            'row': row_idx,
+                            'column': col_idx,
+                            'cell_id': f"table_{i}_cell_{row_idx}_{col_idx}",
+                            'value': cell.text,
+                            'formatted_value': cell.text,
+                            'formatting': DOCXHandler._extract_cell_formatting(cell)
+                        }
+                        table_info['cells'].append(cell_info)
+                
+                structure['tables'].append(table_info)
+            
+            logger.info(f"[SUCCESS] Extracted DOCX structure: {len(structure['paragraphs'])} paragraphs, {len(structure['tables'])} tables")
+            return structure
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to extract DOCX structure: {str(e)}")
+            return {'file_type': 'docx', 'error': str(e)}
+    
+    @staticmethod
+    def apply_targeted_updates(docx_bytes: bytes, updates: List[Dict[str, Any]]) -> bytes:
+        """
+        Apply targeted updates to specific sections while preserving formatting.
+        
+        Args:
+            docx_bytes: Original DOCX file content as bytes
+            updates: List of update dictionaries with section info
+            
+        Returns:
+            Updated DOCX file content as bytes
+        """
+        try:
+            doc = Document(io.BytesIO(docx_bytes))
+            
+            for update in updates:
+                DOCXHandler._apply_single_targeted_update(doc, update)
+            
+            # Save to bytes
+            doc_bytes = io.BytesIO()
+            doc.save(doc_bytes)
+            doc_bytes.seek(0)
+            
+            result_bytes = doc_bytes.getvalue()
+            logger.info(f"[SUCCESS] Applied {len(updates)} targeted DOCX updates: {len(result_bytes)} bytes")
+            return result_bytes
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to apply targeted DOCX updates: {str(e)}")
+            return docx_bytes  # Return original if update fails
+    
+    @staticmethod
+    def _apply_single_targeted_update(doc: Document, update: Dict[str, Any]):
+        """Apply a single targeted update to the document."""
+        try:
+            section_type = update.get('section_type')
+            
+            if section_type == 'paragraph':
+                DOCXHandler._update_targeted_paragraph(doc, update)
+            elif section_type == 'table':
+                DOCXHandler._update_targeted_table(doc, update)
+            elif section_type == 'heading':
+                DOCXHandler._update_targeted_heading(doc, update)
+            else:
+                logger.warning(f"[WARNING] Unknown section type: {section_type}")
+                
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to apply targeted update: {str(e)}")
+    
+    @staticmethod
+    def _update_targeted_paragraph(doc: Document, update: Dict[str, Any]):
+        """Update a specific paragraph while preserving formatting."""
+        try:
+            paragraph_index = update.get('paragraph_index')
+            new_content = update.get('new_content')
+            
+            if paragraph_index is None or paragraph_index >= len(doc.paragraphs):
+                logger.error(f"[ERROR] Invalid paragraph index: {paragraph_index}")
+                return
+            
+            paragraph = doc.paragraphs[paragraph_index]
+            
+            # Store original formatting
+            original_runs = list(paragraph.runs)
+            original_formatting = DOCXHandler._extract_paragraph_formatting(paragraph)
+            
+            # Clear paragraph content
+            paragraph.clear()
+            
+            # Add new content while preserving formatting
+            if original_runs:
+                # Use formatting from first run as template
+                template_run = original_runs[0]
+                new_run = paragraph.add_run(new_content)
+                
+                # Apply template formatting
+                new_run.font.name = template_run.font.name
+                new_run.font.size = template_run.font.size
+                new_run.font.bold = template_run.font.bold
+                new_run.font.italic = template_run.font.italic
+                if template_run.font.color and template_run.font.color.rgb:
+                    new_run.font.color.rgb = template_run.font.color.rgb
+            else:
+                # No original runs, add plain text
+                paragraph.add_run(new_content)
+            
+            logger.info(f"[SUCCESS] Updated paragraph {paragraph_index}")
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to update paragraph: {str(e)}")
+    
+    @staticmethod
+    def _update_targeted_table(doc: Document, update: Dict[str, Any]):
+        """Update specific table cells while preserving formatting."""
+        try:
+            table_index = update.get('table_index')
+            row_index = update.get('row_index')
+            col_index = update.get('col_index')
+            new_value = update.get('new_value')
+            
+            if table_index is None or table_index >= len(doc.tables):
+                logger.error(f"[ERROR] Invalid table index: {table_index}")
+                return
+            
+            table = doc.tables[table_index]
+            
+            if row_index is None or col_index is None:
+                logger.error(f"[ERROR] Invalid cell coordinates: row={row_index}, col={col_index}")
+                return
+            
+            if row_index >= len(table.rows) or col_index >= len(table.rows[row_index].cells):
+                logger.error(f"[ERROR] Cell coordinates out of range")
+                return
+            
+            cell = table.rows[row_index].cells[col_index]
+            
+            # Store original formatting
+            original_formatting = DOCXHandler._extract_cell_formatting(cell)
+            
+            # Clear cell content
+            cell.text = ""
+            
+            # Add new content while preserving formatting
+            if cell.paragraphs:
+                para = cell.paragraphs[0]
+                para.clear()
+                new_run = para.add_run(new_value)
+                
+                # Apply original formatting if available
+                if original_formatting:
+                    DOCXHandler._apply_cell_formatting(new_run, original_formatting)
+            else:
+                cell.text = new_value
+            
+            logger.info(f"[SUCCESS] Updated table cell [{table_index}][{row_index}][{col_index}]")
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to update table cell: {str(e)}")
+    
+    @staticmethod
+    def _update_targeted_heading(doc: Document, update: Dict[str, Any]):
+        """Update a heading while preserving formatting."""
+        try:
+            paragraph_index = update.get('paragraph_index')
+            new_content = update.get('new_content')
+            heading_level = update.get('heading_level', 1)
+            
+            if paragraph_index is None or paragraph_index >= len(doc.paragraphs):
+                logger.error(f"[ERROR] Invalid heading index: {paragraph_index}")
+                return
+            
+            paragraph = doc.paragraphs[paragraph_index]
+            
+            # Store original formatting
+            original_formatting = DOCXHandler._extract_paragraph_formatting(paragraph)
+            
+            # Update heading content
+            paragraph.clear()
+            new_run = paragraph.add_run(new_content)
+            
+            # Apply heading formatting
+            new_run.font.size = Inches(18/72) if heading_level == 1 else Inches(16/72) if heading_level == 2 else Inches(14/72)
+            new_run.bold = True
+            
+            # Apply original formatting if available
+            if original_formatting:
+                DOCXHandler._apply_paragraph_formatting(new_run, original_formatting)
+            
+            logger.info(f"[SUCCESS] Updated heading {paragraph_index}")
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to update heading: {str(e)}")
+    
+    @staticmethod
+    def _extract_paragraph_formatting(paragraph) -> Dict[str, Any]:
+        """Extract formatting information from a paragraph."""
+        try:
+            formatting = {
+                'alignment': paragraph.alignment,
+                'style': paragraph.style.name if paragraph.style else None,
+                'runs': []
+            }
+            
+            for run in paragraph.runs:
+                run_formatting = {
+                    'font_name': run.font.name,
+                    'font_size': run.font.size.pt if run.font.size else None,
+                    'bold': run.font.bold,
+                    'italic': run.font.italic,
+                    'underline': run.underline,
+                    'color': str(run.font.color.rgb) if run.font.color and run.font.color.rgb else None
+                }
+                formatting['runs'].append(run_formatting)
+            
+            return formatting
+        except Exception as e:
+            logger.warning(f"[WARNING] Could not extract paragraph formatting: {str(e)}")
+            return {}
+    
+    @staticmethod
+    def _extract_cell_formatting(cell) -> Dict[str, Any]:
+        """Extract formatting information from a table cell."""
+        try:
+            formatting = {}
+            
+            if cell.paragraphs:
+                para = cell.paragraphs[0]
+                formatting = DOCXHandler._extract_paragraph_formatting(para)
+            
+            return formatting
+        except Exception as e:
+            logger.warning(f"[WARNING] Could not extract cell formatting: {str(e)}")
+            return {}
+    
+    @staticmethod
+    def _apply_paragraph_formatting(run, formatting: Dict[str, Any]):
+        """Apply formatting to a run."""
+        try:
+            if 'runs' in formatting and formatting['runs']:
+                template_run = formatting['runs'][0]
+                
+                if template_run.get('font_name'):
+                    run.font.name = template_run['font_name']
+                if template_run.get('font_size'):
+                    run.font.size = Inches(template_run['font_size']/72)
+                if template_run.get('bold') is not None:
+                    run.font.bold = template_run['bold']
+                if template_run.get('italic') is not None:
+                    run.font.italic = template_run['italic']
+                if template_run.get('underline') is not None:
+                    run.underline = template_run['underline']
+                if template_run.get('color'):
+                    run.font.color.rgb = RGBColor.from_string(template_run['color'].replace('#', ''))
+        except Exception as e:
+            logger.warning(f"[WARNING] Could not apply paragraph formatting: {str(e)}")
+    
+    @staticmethod
+    def _apply_cell_formatting(run, formatting: Dict[str, Any]):
+        """Apply formatting to a cell run."""
+        try:
+            DOCXHandler._apply_paragraph_formatting(run, formatting)
+        except Exception as e:
+            logger.warning(f"[WARNING] Could not apply cell formatting: {str(e)}")
+    
+    @staticmethod
+    def create_paragraph_update(paragraph_index: int, new_content: str, 
+                               reason: str = None) -> Dict[str, Any]:
+        """Create a paragraph update dictionary."""
+        return {
+            'section_id': f"para_{paragraph_index}",
+            'section_type': 'paragraph',
+            'paragraph_index': paragraph_index,
+            'new_content': new_content,
+            'reason': reason
+        }
+    
+    @staticmethod
+    def create_table_update(table_index: int, row_index: int, col_index: int, 
+                           new_value: str, reason: str = None) -> Dict[str, Any]:
+        """Create a table cell update dictionary."""
+        return {
+            'section_id': f"table_{table_index}_cell_{row_index}_{col_index}",
+            'section_type': 'table',
+            'table_index': table_index,
+            'row_index': row_index,
+            'col_index': col_index,
+            'new_value': new_value,
+            'reason': reason
+        }
+    
+    @staticmethod
+    def create_heading_update(paragraph_index: int, new_content: str, 
+                             heading_level: int = 1, reason: str = None) -> Dict[str, Any]:
+        """Create a heading update dictionary."""
+        return {
+            'section_id': f"heading_{paragraph_index}",
+            'section_type': 'heading',
+            'paragraph_index': paragraph_index,
+            'new_content': new_content,
+            'heading_level': heading_level,
+            'reason': reason
+        }

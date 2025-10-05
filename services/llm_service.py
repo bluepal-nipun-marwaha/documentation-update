@@ -470,3 +470,244 @@ UPDATE INSTRUCTIONS:
 Return the complete updated documentation:
 """
         return prompt
+    
+    def identify_document_sections_to_update(self, document_structure: Dict[str, Any], 
+                                           commit_context: Dict[str, Any], 
+                                           rag_context: str = "") -> List[Dict[str, Any]]:
+        """
+        Identify specific sections in a document that need updating based on commit changes.
+        
+        Args:
+            document_structure: Document structure from extract_content_with_structure()
+            commit_context: Commit information and analysis
+            rag_context: Additional context from RAG retrieval
+            
+        Returns:
+            List of update dictionaries with section information
+        """
+        try:
+            logger.info("🤖 Identifying document sections to update with LLM...")
+            
+            # Create section identification prompt
+            prompt = self._create_section_identification_prompt(
+                document_structure, commit_context, rag_context
+            )
+            
+            # Call LLM for section identification
+            system_prompt = """You are an expert document analyst. Your task is to identify ONLY the specific sections 
+that need updating based on code changes. Be precise and conservative - only identify sections that actually 
+require changes. Preserve all other content unchanged."""
+            
+            llm_response = self._call_llm(prompt, system_prompt, temperature=0.2, max_tokens=2000)
+            
+            # Parse response
+            updates = self._parse_section_identification_response(llm_response, document_structure)
+            
+            logger.info(f"[SUCCESS] Identified {len(updates)} sections for update")
+            return updates
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Section identification failed: {str(e)}")
+            return []
+    
+    def _create_section_identification_prompt(self, document_structure: Dict[str, Any], 
+                                            commit_context: Dict[str, Any], 
+                                            rag_context: str) -> str:
+        """Create prompt for section identification."""
+        
+        file_type = document_structure.get('file_type', 'unknown')
+        commit_message = commit_context.get('message', '')
+        modified_files = commit_context.get('modified', [])
+        analysis = commit_context.get('analysis', {})
+        
+        # Build document sections summary
+        sections_summary = self._build_sections_summary(document_structure)
+        
+        prompt = f"""You are analyzing a {file_type.upper()} document to identify which sections need updating based on code changes.
+
+DOCUMENT STRUCTURE:
+{json.dumps(sections_summary, indent=2)}
+
+COMMIT CHANGES:
+- Message: {commit_message}
+- Modified files: {', '.join(modified_files[:10])}
+- Analysis: {json.dumps(analysis, indent=2)}
+
+ADDITIONAL CONTEXT:
+{rag_context[:1000] if rag_context else 'No additional context'}
+
+TASK:
+Identify ONLY the specific sections that need updating. Be conservative - only identify sections that actually require changes.
+
+Return JSON format:
+{{
+  "updates": [
+    {{
+      "section_id": "specific_section_id",
+      "section_type": "paragraph|table|cell|row|heading|section",
+      "action": "replace|update_cells|insert|delete",
+      "new_content": "new text content",
+      "new_values": ["value1", "value2"],
+      "target_location": {{
+        "paragraph_index": 5,
+        "table_index": 1,
+        "row": 2,
+        "column": 0,
+        "sheet_name": "Sheet1"
+      }},
+      "reason": "brief explanation of why this section needs updating"
+    }}
+  ]
+}}
+
+IMPORTANT RULES:
+1. Only identify sections that actually need changes
+2. Be precise with target_location coordinates
+3. For tables, specify exact row/column indices
+4. For Excel, include sheet_name in target_location
+5. Provide clear reasons for each update
+6. If no changes are needed, return empty updates array
+
+Return ONLY the JSON, no other text."""
+        
+        return prompt
+    
+    def _build_sections_summary(self, document_structure: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a summary of document sections for LLM analysis."""
+        try:
+            file_type = document_structure.get('file_type', 'unknown')
+            summary = {
+                'file_type': file_type,
+                'sections': []
+            }
+            
+            if file_type == 'docx':
+                # Summarize DOCX sections
+                paragraphs = document_structure.get('paragraphs', [])
+                tables = document_structure.get('tables', [])
+                
+                for para in paragraphs[:20]:  # Limit to first 20 paragraphs
+                    summary['sections'].append({
+                        'section_id': para.get('paragraph_id'),
+                        'type': 'paragraph',
+                        'content_preview': para.get('text', '')[:100],
+                        'is_heading': para.get('is_heading', False),
+                        'heading_level': para.get('heading_level', 0)
+                    })
+                
+                for table in tables[:5]:  # Limit to first 5 tables
+                    summary['sections'].append({
+                        'section_id': table.get('table_id'),
+                        'type': 'table',
+                        'rows': table.get('rows', 0),
+                        'columns': table.get('columns', 0),
+                        'content_preview': f"Table with {table.get('rows', 0)} rows, {table.get('columns', 0)} columns"
+                    })
+            
+            elif file_type == 'excel':
+                # Summarize Excel sections
+                sheets = document_structure.get('sheets', {})
+                for sheet_name, sheet_data in sheets.items():
+                    summary['sections'].append({
+                        'section_id': f"sheet_{sheet_name}",
+                        'type': 'sheet',
+                        'sheet_name': sheet_name,
+                        'rows': sheet_data.get('max_row', 0),
+                        'columns': sheet_data.get('max_column', 0),
+                        'headers': [h.get('value', '') for h in sheet_data.get('headers', [])]
+                    })
+            
+            elif file_type == 'csv':
+                # Summarize CSV sections
+                headers = document_structure.get('headers', [])
+                data_rows = document_structure.get('data_rows', [])
+                summary['sections'].append({
+                    'section_id': 'csv_data',
+                    'type': 'csv',
+                    'headers': [h.get('value', '') for h in headers],
+                    'total_rows': len(data_rows),
+                    'sample_rows': [row.get('values', []) for row in data_rows[:3]]
+                })
+            
+            elif file_type == 'markdown':
+                # Summarize Markdown sections
+                sections = document_structure.get('sections', [])
+                for section in sections[:10]:  # Limit to first 10 sections
+                    summary['sections'].append({
+                        'section_id': section.get('section_id'),
+                        'type': 'section',
+                        'header': section.get('header_text', ''),
+                        'header_level': section.get('header_level', 0),
+                        'content_preview': section.get('content', '')[:100]
+                    })
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to build sections summary: {str(e)}")
+            return {'file_type': 'unknown', 'sections': []}
+    
+    def _parse_section_identification_response(self, llm_response: str, 
+                                            document_structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Parse LLM response for section identification."""
+        try:
+            # Try to extract JSON from response
+            import re
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                response_data = json.loads(json_match.group())
+                updates = response_data.get('updates', [])
+                
+                # Validate updates against document structure
+                validated_updates = []
+                for update in updates:
+                    if self._validate_update(update, document_structure):
+                        validated_updates.append(update)
+                    else:
+                        logger.warning(f"[WARNING] Invalid update skipped: {update.get('section_id', 'unknown')}")
+                
+                return validated_updates
+            else:
+                logger.warning("[WARNING] No JSON found in LLM response")
+                return []
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"[ERROR] Failed to parse section identification response: {str(e)}")
+            return []
+    
+    def _validate_update(self, update: Dict[str, Any], document_structure: Dict[str, Any]) -> bool:
+        """Validate an update against document structure."""
+        try:
+            file_type = document_structure.get('file_type')
+            section_type = update.get('section_type')
+            target_location = update.get('target_location', {})
+            
+            if file_type == 'docx':
+                if section_type == 'paragraph':
+                    para_index = target_location.get('paragraph_index')
+                    if para_index is not None and para_index < document_structure.get('total_paragraphs', 0):
+                        return True
+                elif section_type == 'table':
+                    table_index = target_location.get('table_index')
+                    if table_index is not None and table_index < document_structure.get('total_tables', 0):
+                        return True
+            
+            elif file_type == 'excel':
+                if section_type in ['cell', 'row']:
+                    sheet_name = target_location.get('sheet_name')
+                    if sheet_name in document_structure.get('sheets', {}):
+                        return True
+            
+            elif file_type == 'csv':
+                if section_type in ['row', 'cell', 'header']:
+                    return True  # CSV validation is simpler
+            
+            elif file_type == 'markdown':
+                if section_type in ['section', 'paragraph', 'header', 'table']:
+                    return True  # Markdown validation is simpler
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"[WARNING] Update validation failed: {str(e)}")
+            return False
