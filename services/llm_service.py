@@ -72,6 +72,22 @@ class LLMService:
             logger.error(f"[ERROR] LLM provider call failed: {str(e)}")
             raise Exception(f"LLM provider failed: {str(e)}")
     
+    def generate_response(self, prompt: str, system_prompt: str = "", temperature: float = 0.3, max_tokens: int = 1000) -> str:
+        """
+        Public method to generate responses from the LLM.
+        This method is used by the DOCX workflow modules.
+        
+        Args:
+            prompt: The input prompt for the LLM
+            system_prompt: Optional system prompt
+            temperature: Temperature for response generation
+            max_tokens: Maximum tokens in response
+            
+        Returns:
+            Generated response from the LLM
+        """
+        return self._call_llm(prompt, system_prompt, temperature, max_tokens)
+    
     def analyze_commit_impact(self, commit_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Analyze commit impact and determine documentation needs.
@@ -127,20 +143,20 @@ class LLMService:
         prompt = f"""
 Analyze this commit and determine its impact on documentation:
 
-COMMIT DETAILS:
-- Message: {commit_message}
-- Author: {author}
-- Modified files: {', '.join(modified_files) if modified_files else 'None'}
-- Added files: {', '.join(added_files) if added_files else 'None'}
-- Removed files: {', '.join(removed_files) if removed_files else 'None'}
+            COMMIT DETAILS:
+            - Message: {commit_message}
+            - Author: {author}
+            - Modified files: {', '.join(modified_files) if modified_files else 'None'}
+            - Added files: {', '.join(added_files) if added_files else 'None'}
+            - Removed files: {', '.join(removed_files) if removed_files else 'None'}
 
-CODE CHANGES:
-{diff_content[:2000] if diff_content else 'No diff available'}
+            CODE CHANGES:
+            {diff_content[:2000] if diff_content else 'No diff available'}
 
-ANALYSIS REQUIRED:
-1. Determine the impact level: "low", "medium", or "high"
-2. Identify which types of documentation might need updates
-3. Provide reasoning for your assessment
+            ANALYSIS REQUIRED:
+            1. Determine the impact level: low, medium, or high
+            2. Identify which types of documentation might need updates
+            3. Provide reasoning for your assessment
 
 RESPOND IN JSON FORMAT:
 {{
@@ -470,7 +486,67 @@ UPDATE INSTRUCTIONS:
 5. PRESERVE ALL original content - do not truncate or remove sections
 6. If no changes are needed, return the original content unchanged
 7. Return the COMPLETE updated documentation with all sections intact
-
-Return the complete updated documentation:
-"""
+        """
+        
         return prompt
+    
+    def determine_docx_edit_type(self, commit_context: Dict[str, Any], doc_content: str) -> str:
+        """
+        Determines what type of DOCX edit is needed based on commit context and document content.
+        
+        Args:
+            commit_context: Commit information and context
+            doc_content: Current document content
+            
+        Returns:
+            Edit type: "edit_line", "add_paragraph", "edit_table", or "no_change"
+        """
+        try:
+            commit_message = commit_context.get('message', '')
+            files_changed = commit_context.get('files', [])
+            diff_content = commit_context.get('diff', '')
+            
+            # Create prompt to analyze what type of edit is needed
+            prompt = f"""
+            Analyze this commit and document to determine what type of DOCX edit is needed:
+            
+            COMMIT INFORMATION:
+            - Message: {commit_message}
+            - Files Changed: {', '.join(files_changed)}
+            - Diff: {diff_content[:500] if diff_content else 'No diff available'}
+            
+            DOCUMENT CONTENT (first 1000 characters):
+            {doc_content[:1000]}
+            
+            Based on this analysis, determine what type of edit is needed:
+            
+            1. "edit_line" - If existing text/paragraphs need to be updated or modified
+            2. "add_paragraph" - If new content needs to be added to the document
+            3. "edit_table" - If tables in the document need to be updated
+            4. "no_change" - If no changes are needed to the document
+            
+            Consider:
+            - Does the commit add new features that need documentation?
+            - Does it modify existing functionality that needs updating?
+            - Does it change data structures that affect tables?
+            - Does it require new sections or explanations?
+            
+            Return only one of: edit_line, add_paragraph, edit_table, no_change
+            """
+            
+            response = self.provider.generate_response(prompt)
+            
+            # Parse response and validate
+            edit_type = response.strip().lower()
+            
+            valid_types = ['edit_line', 'add_paragraph', 'edit_table', 'no_change']
+            if edit_type in valid_types:
+                logger.info(f"Determined DOCX edit type: {edit_type}")
+                return edit_type
+            else:
+                logger.warning(f"Invalid edit type '{edit_type}', defaulting to 'edit_line'")
+                return 'edit_line'
+                
+        except Exception as e:
+            logger.error(f"Error determining DOCX edit type: {e}")
+            return 'edit_line'  # Default fallback

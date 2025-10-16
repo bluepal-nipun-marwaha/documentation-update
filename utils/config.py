@@ -110,6 +110,10 @@ class DocumentConfig(BaseSettings):
     backup_path: str = Field(default="rework/backups", description="Backup directory")
     audit_log_path: str = Field(default="rework/audit/audit.log", description="Audit log path")
     
+    # DOCX Workflow Configuration
+    new_docx_workflow_enabled: bool = Field(default=True, description="Enable new conditional DOCX workflow", alias="NEW_DOCX_WORKFLOW")
+    docx_table_formatting: str = Field(default="github_docs", description="Table formatting style: github_docs, basic", alias="DOCX_TABLE_FORMATTING")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

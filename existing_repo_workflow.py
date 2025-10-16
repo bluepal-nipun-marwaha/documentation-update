@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 class GitHubClient:
     """Client for GitHub API operations for documentation updates."""
     
-    def __init__(self, token, repo_url):
+    def __init__(self, token, repo_url, test_mode=False):
         self.token = token
         self.repo_url = repo_url
+        self.test_mode = test_mode
         self.base_url = 'https://api.github.com'  # Add base_url for compatibility
         self.owner, self.repo = self._parse_repo_url(repo_url)
         self.headers = {
@@ -35,8 +36,11 @@ class GitHubClient:
         }
         logger.info(f"🔧 GitHubClient initialized: owner={self.owner}, repo={self.repo}")
         
-        # Test authentication and get repository info
-        self._test_authentication()
+        if test_mode:
+            logger.info("🧪 TEST MODE: Skipping GitHub authentication")
+        else:
+            # Test authentication and get repository info
+            self._test_authentication()
     
     def _parse_repo_url(self, repo_url):
         """Parse GitHub repository URL to extract owner and repo name."""
@@ -49,6 +53,10 @@ class GitHubClient:
     
     def _test_authentication(self):
         """Test GitHub API authentication and get repository info."""
+        if self.test_mode:
+            logger.info("🧪 TEST MODE: Skipping GitHub authentication test")
+            return
+            
         try:
             import requests
             
@@ -773,9 +781,12 @@ class ExistingRepoWorkflow:
                 docs_client = gitlab_client
                 logger.info("📚 Using GitLab for documentation storage")
             elif docs_provider == 'github':
+                # Check if test mode is enabled
+                test_mode = os.getenv('DISABLE_GITHUB_AUTH', 'false').lower() == 'true'
                 github_client = GitHubClient(
                     token=repo_config['docs_token'],
-                    repo_url=repo_config['docs_repo_url']
+                    repo_url=repo_config['docs_repo_url'],
+                    test_mode=test_mode
                 )
                 docs_client = github_client
                 logger.info("📚 Using GitHub for documentation storage")
@@ -887,9 +898,12 @@ class ExistingRepoWorkflow:
                 }
                 docs_client = gitlab_client
             elif docs_provider == 'github':
+                # Check if test mode is enabled
+                test_mode = os.getenv('DISABLE_GITHUB_AUTH', 'false').lower() == 'true'
                 github_client = GitHubClient(
                     token=repo_config['docs_token'],
-                    repo_url=repo_config['docs_repo_url']
+                    repo_url=repo_config['docs_repo_url'],
+                    test_mode=test_mode
                 )
                 docs_client = github_client
             else:
@@ -1901,34 +1915,78 @@ class ExistingRepoWorkflow:
                     }
                     
                     # Use GitLab client to update the file
-                    # For DOCX files, use enhanced Step 1-5 workflow (if enabled)
+                    # For DOCX files, use new conditional workflow dispatcher
                     if file_path.lower().endswith('.docx'):
-                        # Check if enhanced workflow is enabled
-                        enhanced_workflow_enabled = os.getenv('ENHANCED_DOCX_WORKFLOW', 'true').lower() == 'true'
+                        # Check if new DOCX workflow is enabled
+                        new_docx_workflow_enabled = os.getenv('NEW_DOCX_WORKFLOW', 'true').lower() == 'true'
                         
-                        if enhanced_workflow_enabled:
-                            logger.info(f"📄 Processing DOCX file with enhanced workflow: {file_path}")
+                        if new_docx_workflow_enabled:
+                            logger.info(f"📄 Processing DOCX file with new conditional workflow: {file_path}")
                             try:
-                                updated_docx_bytes = self._process_docx_with_enhanced_workflow(
-                                    original_content, updated_content, commit_context, file_path, llm_service, rag_service
+                                updated_docx_bytes = self._process_docx_with_new_workflow_fixed(
+                                    original_content, commit_context, llm_service
                                 )
+                                
+                                # Save updated DOCX locally for testing
+                                try:
+                                    from datetime import datetime
+                                    
+                                    # Create local test directory
+                                    test_dir = "test_output"
+                                    os.makedirs(test_dir, exist_ok=True)
+                                    
+                                    # Generate filename with timestamp
+                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    filename = file_path.replace("/", "_").replace("\\", "_")
+                                    local_filename = f"{test_dir}/{filename}_{timestamp}.docx"
+                                    
+                                    # Save the updated DOCX locally
+                                    with open(local_filename, 'wb') as f:
+                                        f.write(updated_docx_bytes)
+                                    
+                                    logger.info(f"💾 Saved updated DOCX locally: {local_filename}")
+                                    
+                                except Exception as save_error:
+                                    logger.warning(f"⚠️ Failed to save DOCX locally: {str(save_error)}")
                                 
                                 if docs_client.update_single_documentation_file(
                                     file_path, updated_docx_bytes, gitlab_commit_data
                                 ):
                                     updated_files.append(file_path)
-                                    logger.info(f"✅ Updated DOCX {file_path} with enhanced workflow")
+                                    logger.info(f"✅ Updated DOCX {file_path} with new workflow")
                                 else:
                                     failed_files.append(file_path)
                                     logger.error(f"❌ Failed to update DOCX {file_path} in {docs_provider.upper()}")
                             except Exception as e:
-                                logger.error(f"❌ Enhanced DOCX workflow failed for {file_path}: {str(e)}")
+                                logger.error(f"❌ New DOCX workflow failed for {file_path}: {str(e)}")
                                 # Fallback to basic DOCX processing
                                 from utils.docx_handler import DOCXHandler
                                 if original_content:
                                     updated_docx_bytes = DOCXHandler.update_docx_content(original_content, updated_content)
                                 else:
                                     updated_docx_bytes = DOCXHandler.create_docx_from_text(updated_content, "Updated Document")
+                                
+                                # Save updated DOCX locally for testing (fallback)
+                                try:
+                                    from datetime import datetime
+                                    
+                                    # Create local test directory
+                                    test_dir = "test_output"
+                                    os.makedirs(test_dir, exist_ok=True)
+                                    
+                                    # Generate filename with timestamp
+                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    filename = file_path.replace("/", "_").replace("\\", "_")
+                                    local_filename = f"{test_dir}/{filename}_fallback_{timestamp}.docx"
+                                    
+                                    # Save the updated DOCX locally
+                                    with open(local_filename, 'wb') as f:
+                                        f.write(updated_docx_bytes)
+                                    
+                                    logger.info(f"💾 Saved fallback DOCX locally: {local_filename}")
+                                    
+                                except Exception as save_error:
+                                    logger.warning(f"⚠️ Failed to save fallback DOCX locally: {str(save_error)}")
                                 
                                 if docs_client.update_single_documentation_file(
                                     file_path, updated_docx_bytes, gitlab_commit_data
@@ -2786,124 +2844,107 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
             print(f"❌ Error extracting GitLab commit info: {e}")
             return None
     
-    def _process_docx_with_enhanced_workflow(self, original_content: bytes, updated_content: str, commit_context: dict, file_path: str, llm_service=None, rag_service=None) -> bytes:
+    def _process_docx_with_new_workflow(self, original_content: bytes, current_content: str, commit_context: dict, llm_service) -> bytes:
+        """
+        Process DOCX files using the new conditional workflow dispatcher.
+        
+        Args:
+            original_content: Original DOCX file as bytes
+            current_content: Current document content as text
+            commit_context: Commit information and context
+            llm_service: LLM service instance
+            
+        Returns:
+            Updated DOCX file as bytes
+        """
         try:
-            import tempfile
-            import os
-            from pathlib import Path
-            import shutil
+            logger.info("🔄 Starting new DOCX workflow dispatcher")
             
-            logger.info(f"🔄 Starting enhanced DOCX workflow for {file_path}")
+            # Import the new workflow modules
+            from utils.docx_line_editor import DocxLineEditor
+            from utils.docx_paragraph_inserter import DocxParagraphInserter
+            from utils.docx_table_editor import DocxTableEditor
             
-            # Create temporary working directory
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                input_dir = temp_path / "input"
-                output_dir = temp_path / "output"
-                input_dir.mkdir()
-                output_dir.mkdir()
+            # Determine what type of edit is needed
+            edit_type = llm_service.determine_docx_edit_type(commit_context, current_content)
+            logger.info(f"📋 Determined edit type: {edit_type}")
+            
+            # Route to appropriate workflow based on edit type
+            if edit_type == "edit_line":
+                logger.info("📝 Using line editor workflow")
+                line_editor = DocxLineEditor()
+                return line_editor.edit_document_lines(original_content, commit_context, llm_service)
                 
-                # Step 1: Save original DOCX and updated content
-                original_docx_path = input_dir / "original.docx"
-                with open(original_docx_path, 'wb') as f:
-                    f.write(original_content)
+            elif edit_type == "add_paragraph":
+                logger.info("📝 Using paragraph inserter workflow")
+                paragraph_inserter = DocxParagraphInserter()
+                return paragraph_inserter.insert_paragraph(original_content, commit_context, llm_service)
                 
-                # Create commit info file for the workflow
-                commit_info = {
-                    'message': commit_context.get('message', 'Documentation update'),
-                    'author': commit_context.get('author', 'System'),
-                    'hash': commit_context.get('hash', 'unknown'),
-                    'diff': commit_context.get('diff', ''),
-                    'modified': commit_context.get('modified', [])
-                }
+            elif edit_type == "edit_table":
+                logger.info("📝 Using table editor workflow")
+                table_editor = DocxTableEditor()
+                return table_editor.edit_tables(original_content, commit_context, llm_service)
                 
-                # Step 2: Run Step 1 (DOCX to MD with LLM updates) - Pass user's LLM service
-                logger.info("📝 Step 1: Converting DOCX to Markdown with LLM updates...")
-                from test_step_by_step.step1_docx_to_md import Step1Processor
-                step1_processor = Step1Processor(str(input_dir), str(output_dir), llm_service)
-                step1_result = step1_processor.run_step1_integration(str(original_docx_path), commit_info)
+            elif edit_type == "no_change":
+                logger.info("📝 No changes needed, returning original content")
+                return original_content
                 
-                if not step1_result:
-                    logger.error("❌ Step 1 failed")
-                    raise Exception("Step 1 failed")
-                
-                # Step 3: Run Step 2 (MD to DOCX with formatting)
-                logger.info("📝 Step 2: Converting Markdown back to DOCX with formatting...")
-                from test_step_by_step.step2_md_to_docx import Step2Processor
-                step2_processor = Step2Processor(str(input_dir), str(output_dir))
-                step2_result = step2_processor.run_step2()
-                
-                if not step2_result:
-                    logger.error("❌ Step 2 failed")
-                    raise Exception("Step 2 failed")
-                
-                # Step 4: Extract tables
-                logger.info("📝 Extracting tables from original document...")
-                from test_step_by_step.extract_tables import TableExtractor
-                from docx import Document
-                table_extractor = TableExtractor(str(input_dir), str(output_dir))
-                
-                # Load the original document
-                original_doc = Document(original_docx_path)
-                table_result = table_extractor.extract_tables(original_doc)
-                
-                if not table_result:
-                    logger.error("❌ Table extraction failed")
-                    raise Exception("Table extraction failed")
-                
-                # Save the extracted tables to JSON file
-                table_extractor.save_extracted_tables(table_result)
-                
-                # Step 5: Run Step 3 (Process tables with LLM) - Pass user's LLM service
-                logger.info("📝 Step 3: Processing tables with LLM...")
-                from test_step_by_step.step3_improved import ImprovedTableProcessor
-                step3_processor = ImprovedTableProcessor(str(input_dir), str(output_dir), llm_service)
-                step3_result = step3_processor.run_improved_processing(
-                    repo_url="https://github.com/bluepal-nipun-marwaha/click",
-                    token="",
-                    before_commit="39a5ba2ca67e994745150164bb44251a0d532c50",
-                    after_commit="2ebf734ef773dda7e327fde803be922914a741a4"
-                )
-                
-                if not step3_result:
-                    logger.error("❌ Step 3 failed")
-                    raise Exception("Step 3 failed")
-                
-                # Step 6: Run Step 4 (Line-by-line merge)
-                logger.info("📝 Step 4: Line-by-line merge...")
-                from test_step_by_step.step4_line_by_line import LineByLineDocumentMerger
-                step4_processor = LineByLineDocumentMerger(str(input_dir), str(output_dir))
-                step4_result = step4_processor.run_step4()
-                
-                if not step4_result:
-                    logger.error("❌ Step 4 failed")
-                    raise Exception("Step 4 failed")
-                
-                # Step 7: Run Step 5 (Formatting extraction)
-                logger.info("📝 Step 5: Applying original formatting...")
-                from test_step_by_step.step5_formatting_extraction import FormattingExtractor
-                step5_processor = FormattingExtractor(str(input_dir), str(output_dir))
-                step5_result = step5_processor.run_step5()
-                
-                if not step5_result:
-                    logger.error("❌ Step 5 failed")
-                    raise Exception("Step 5 failed")
-                
-                # Read the final result
-                final_docx_path = output_dir / "merged_documentation_formatting_applied.docx"
-                if not final_docx_path.exists():
-                    logger.error("❌ Final DOCX file not found")
-                    raise Exception("Final DOCX file not found")
-                
-                with open(final_docx_path, 'rb') as f:
-                    final_content = f.read()
-                
-                logger.info(f"✅ Enhanced DOCX workflow completed successfully for {file_path}")
-                return final_content
+            else:
+                logger.warning(f"⚠️ Unknown edit type '{edit_type}', defaulting to line editor")
+                line_editor = DocxLineEditor()
+                return line_editor.edit_document_lines(original_content, commit_context, llm_service)
                 
         except Exception as e:
-            logger.error(f"❌ Enhanced DOCX workflow failed: {str(e)}")
-            raise e
+            logger.error(f"❌ New DOCX workflow failed: {str(e)}")
+            # Return original content as fallback
+            return original_content
+    
+    def _process_docx_with_new_workflow_fixed(self, original_content: bytes, commit_context: dict, llm_service) -> bytes:
+        """
+        Process DOCX files using the new fixed conditional workflow dispatcher.
+        
+        Args:
+            original_content: Original DOCX file as bytes
+            commit_context: Commit information and context
+            llm_service: LLM service instance
+            
+        Returns:
+            Updated DOCX file as bytes
+        """
+        try:
+            logger.info("🔄 Starting new DOCX workflow dispatcher (fixed version)")
+            
+            # Determine the type of edit needed
+            edit_type = llm_service.determine_docx_edit_type(commit_context, "")
+            
+            logger.info(f"📋 Determined edit type: {edit_type}")
+            
+            # Route to appropriate workflow using fixed modules
+            if edit_type == "edit_line":
+                logger.info("📝 Using line editor workflow (fixed)")
+                from utils.docx_line_editor_fixed import DocxLineEditor
+                editor = DocxLineEditor()
+                return editor.edit_document_lines(original_content, commit_context, llm_service)
+                
+            elif edit_type == "add_paragraph":
+                logger.info("📝 Using paragraph inserter workflow (fixed)")
+                from utils.docx_paragraph_inserter_fixed import DocxParagraphInserter
+                inserter = DocxParagraphInserter()
+                return inserter.insert_new_paragraphs(original_content, commit_context, llm_service)
+                
+            elif edit_type == "edit_table":
+                logger.info("📝 Using table editor workflow (fixed)")
+                from utils.docx_table_editor_fixed import DocxTableEditor
+                editor = DocxTableEditor()
+                return editor.edit_document_tables(original_content, commit_context, llm_service)
+                
+            else:
+                logger.info("📝 No changes needed")
+                return original_content
+                
+        except Exception as e:
+            logger.error(f"❌ New DOCX workflow failed: {str(e)}")
+            return original_content
     
     def start(self):
         """Start the existing repository workflow server."""

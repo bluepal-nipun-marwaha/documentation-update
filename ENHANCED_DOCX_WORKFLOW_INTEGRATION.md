@@ -1,219 +1,245 @@
-# Enhanced DOCX Workflow Integration
+# New DOCX Workflow Integration
 
 ## Overview
 
-The Step 1-5 enhanced DOCX workflow has been successfully integrated into the main `existing_repo_workflow.py` system. This integration provides automatic, high-quality DOCX document processing when the LLM selects DOCX files for updates.
+The new DOCX workflow system replaces the complex 5-step enhanced workflow with three specialized, conditional workflows based on the type of edit operation needed. This approach provides better performance, simpler maintenance, and more accurate formatting preservation.
 
-## What Was Integrated
+## Architecture
 
-### 1. Enhanced DOCX Processing Method
-- **Method**: `_process_docx_with_enhanced_workflow()`
-- **Location**: `existing_repo_workflow.py` (lines 2768-2874)
-- **Purpose**: Orchestrates the complete Step 1-5 workflow for DOCX files
+### Workflow Dispatcher
 
-### 2. Automatic Workflow Selection
-- **Location**: `_update_documentation_with_llm()` method (lines 1905-1957)
-- **Logic**: 
-  - Checks `ENHANCED_DOCX_WORKFLOW` environment variable
-  - Uses enhanced workflow if enabled (`true`)
-  - Falls back to basic DOCX processing if disabled (`false`)
-  - Includes error handling and fallback mechanisms
+The system uses an intelligent dispatcher that determines the appropriate workflow based on commit context and document analysis:
 
-### 3. Configuration Support
-- **Environment Variable**: `ENHANCED_DOCX_WORKFLOW=true/false`
-- **Default**: `true` (enhanced workflow enabled)
-- **Location**: `config.example.env` (lines 186-188)
+1. **Edit Type Determination**: LLM analyzes commit context and document content
+2. **Workflow Selection**: Routes to appropriate specialized workflow
+3. **Formatting Preservation**: Each workflow maintains document formatting
+4. **Error Handling**: Graceful fallbacks ensure document integrity
 
-## How It Works
+### Three Specialized Workflows
 
-### When Enhanced Workflow is Enabled (`ENHANCED_DOCX_WORKFLOW=true`):
+#### 1. Line Editor Workflow (`utils/docx_line_editor.py`)
+- **Purpose**: Edit existing lines/paragraphs while preserving formatting
+- **Use Case**: Updates to existing text, corrections, modifications
+- **Features**:
+  - Word-level formatting preservation (bold, italic, underline, colors)
+  - LLM-powered text rephrasing with formatting tags
+  - Safe clearing approach (preserves document structure)
+  - Proportional formatting distribution fallback
 
-1. **Step 1**: Convert DOCX to Markdown with LLM updates
-   - Extracts formatting from original document
-   - Summarizes commit diff
-   - Updates Markdown content naturally under existing headings
+#### 2. Paragraph Inserter Workflow (`utils/docx_paragraph_inserter.py`)
+- **Purpose**: Add new paragraphs by duplicating existing ones
+- **Use Case**: Adding new content, features, or sections
+- **Features**:
+  - Intelligent insertion point detection
+  - Paragraph duplication with formatting preservation
+  - LLM-generated new content
+  - Context-aware content generation
 
-2. **Step 2**: Convert updated Markdown back to DOCX
-   - Applies original formatting dynamically
-   - Preserves fonts, colors, and styles
-
-3. **Step 3**: Extract and process tables
-   - Extracts all tables from original document
-   - Uses LLM to update table content based on commit changes
-   - Maintains table structure and formatting
-
-4. **Step 4**: Line-by-line merge
-   - Compares original and updated content line by line
-   - Uses updated content where changes are detected
-   - Applies original formatting to updated tables
-
-5. **Step 5**: Final formatting application
-   - Extracts complete formatting from original document
-   - Applies it to the merged document
-   - Ensures professional appearance
-
-### When Enhanced Workflow is Disabled (`ENHANCED_DOCX_WORKFLOW=false`):
-
-- Uses the existing basic DOCX processing
-- Simple text-to-DOCX conversion
-- No table processing or advanced formatting
-
-## LLM Provider Compatibility
-
-### ✅ **Full Compatibility with setup_models.py**
-
-The enhanced DOCX workflow is fully compatible with whatever LLM provider the user chooses in `setup_models.py`:
-
-- **Local Models (Ollama)**: Qwen2.5, Llama 3.1, CodeLlama, Mistral, Phi-3, Gemma
-- **Remote Models**: OpenAI (GPT-4o, GPT-4o Mini), Anthropic (Claude 3.5 Sonnet, Claude 3 Haiku), Mistral (Large, Small), Cohere (Command R+, Command R)
-
-### 🔧 **Dynamic LLM Service Integration**
-
-The workflow automatically uses the user's configured LLM service:
-
-1. **Configuration Loading**: Reads LLM provider and model from `.env` file
-2. **Service Creation**: Creates appropriate LLM service based on user's choice
-3. **Step Integration**: Passes the configured LLM service to Step 1 and Step 3 processors
-4. **Fallback Support**: Falls back to basic processing if LLM service fails
-
-### 📝 **How It Works**
-
-```python
-# The enhanced workflow method accepts the user's configured LLM service
-def _process_docx_with_enhanced_workflow(self, original_content, updated_content, commit_context, file_path, llm_service=None, rag_service=None):
-    # Step 1: Uses user's LLM service for text updates
-    step1_processor = Step1Processor(str(input_dir), str(output_dir), llm_service)
-    
-    # Step 3: Uses user's LLM service for table processing  
-    step3_processor = ImprovedTableProcessor(str(input_dir), str(output_dir), llm_service)
-```
-
-### 🎯 **Provider-Specific Benefits**
-
-- **Ollama (Local)**: Privacy, no ongoing costs, full control
-- **OpenAI**: Latest models, high quality, enterprise infrastructure
-- **Anthropic**: Superior reasoning, excellent analysis
-- **Mistral**: Competitive pricing, good multilingual support
-- **Cohere**: Technical content focus, reliable performance
-
-## Benefits
-
-### ✅ **Automatic Processing**
-- No manual intervention required
-- Works seamlessly with existing webhook workflow
-- Processes DOCX files when LLM selects them
-
-### ✅ **High-Quality Output**
-- Preserves original document formatting
-- Updates content naturally under existing structure
-- Handles tables intelligently with LLM processing
-
-### ✅ **Robust Error Handling**
-- Falls back to basic processing if enhanced workflow fails
-- Comprehensive logging for debugging
-- Temporary file cleanup
-
-### ✅ **Configurable**
-- Can be enabled/disabled via environment variable
-- Easy to toggle for testing or production
-
-### ✅ **LLM Provider Agnostic**
-- Works with any LLM provider chosen in setup_models.py
-- Automatically adapts to user's configuration
-- No hardcoded provider dependencies
-
-## Usage
-
-### 1. Enable Enhanced Workflow (Default)
-```bash
-export ENHANCED_DOCX_WORKFLOW=true
-```
-
-### 2. Disable Enhanced Workflow
-```bash
-export ENHANCED_DOCX_WORKFLOW=false
-```
-
-### 3. In Configuration File
-```env
-# Enable enhanced DOCX workflow (Step 1-5 processing)
-ENHANCED_DOCX_WORKFLOW=true
-```
-
-## Testing
-
-A test script `test_enhanced_workflow_integration.py` has been created to verify the integration:
-
-```bash
-python test_enhanced_workflow_integration.py
-```
-
-This test:
-- Creates a sample DOCX file
-- Tests the enhanced workflow method
-- Tests the fallback configuration
-- Provides detailed logging
+#### 3. Table Editor Workflow (`utils/docx_table_editor.py`)
+- **Purpose**: Extract, update, and reformat tables
+- **Use Case**: Table data updates, structure changes
+- **Features**:
+  - GitHub docs style formatting
+  - Professional table styling (headers, borders, padding)
+  - LLM-powered table content updates
+  - Font detection and consistency
 
 ## Integration Points
 
-### Main Workflow Integration
-- **File**: `existing_repo_workflow.py`
-- **Method**: `_update_documentation_with_llm()`
-- **Trigger**: When LLM selects a `.docx` file for updates
-- **Process**: Automatic Step 1-5 workflow execution
+### Main Workflow (`existing_repo_workflow.py`)
 
-### Dependencies
-- All Step 1-5 modules from `test_step_by_step/` directory
-- Temporary file handling for processing
-- Error handling and fallback mechanisms
+The new workflow is integrated into the main documentation update process:
 
-## Logging
-
-The integration provides comprehensive logging:
-
-```
-📄 Processing DOCX file with enhanced workflow: docs/documentation.docx
-📝 Step 1: Converting DOCX to Markdown with LLM updates...
-📝 Step 2: Converting Markdown back to DOCX with formatting...
-📝 Extracting tables from original document...
-📝 Step 3: Processing tables with LLM...
-📝 Step 4: Line-by-line merge...
-📝 Step 5: Applying original formatting...
-✅ Enhanced DOCX workflow completed successfully
+```python
+# New DOCX processing logic
+if file_path.lower().endswith('.docx'):
+    new_docx_workflow_enabled = os.getenv('NEW_DOCX_WORKFLOW', 'true').lower() == 'true'
+    
+    if new_docx_workflow_enabled:
+        updated_docx_bytes = self._process_docx_with_new_workflow(
+            original_content, current_content, commit_context, llm_service
+        )
+    else:
+        # Fallback to basic processing
 ```
 
-## Error Handling
+### LLM Service Integration (`services/llm_service.py`)
 
-### Fallback Mechanism
-If the enhanced workflow fails:
-1. Logs the error
-2. Falls back to basic DOCX processing
-3. Continues with normal workflow
-4. Reports success/failure appropriately
+Added edit type determination method:
+
+```python
+def determine_docx_edit_type(self, commit_context: Dict[str, Any], doc_content: str) -> str:
+    """
+    Determines what type of DOCX edit is needed.
+    Returns: "edit_line", "add_paragraph", "edit_table", or "no_change"
+    """
+```
+
+## Configuration
+
+### Environment Variables
+
+- `NEW_DOCX_WORKFLOW=true` - Enable new conditional workflow (default: true)
+- `DOCX_TABLE_FORMATTING=github_docs` - Table formatting style (default: github_docs)
+
+### Configuration Class
+
+Added to `utils/config.py`:
+
+```python
+class DocumentConfig(BaseSettings):
+    # DOCX Workflow Configuration
+    new_docx_workflow_enabled: bool = Field(default=True, alias="NEW_DOCX_WORKFLOW")
+    docx_table_formatting: str = Field(default="github_docs", alias="DOCX_TABLE_FORMATTING")
+```
+
+## Workflow Selection Logic
+
+The LLM analyzes commit context to determine the appropriate workflow:
+
+### Edit Type Classification
+
+1. **edit_line**: Existing text needs updates/modifications
+2. **add_paragraph**: New content needs to be added
+3. **edit_table**: Tables need updates or modifications
+4. **no_change**: No updates needed
+
+### Decision Factors
+
+- Commit message analysis
+- Files changed in commit
+- Document content structure
+- Type of changes (additions, modifications, deletions)
+
+## Formatting Preservation Strategy
+
+All workflows use the **"Safe Clearing"** approach:
+
+- Clear text from existing runs (`run.text = ""`)
+- DO NOT remove run XML elements
+- Reuse cleared runs to preserve structure
+- Only create new runs if needed
+- Maintains compatibility with tables, lists, headers, footers
+
+## Benefits
+
+### Performance Improvements
+- **Faster Processing**: No multi-step conversions (DOCX→MD→DOCX)
+- **Reduced Complexity**: 3 focused workflows vs 5 complex steps
+- **Better Resource Usage**: Direct document manipulation
+
+### Quality Improvements
+- **Better Formatting**: Direct manipulation preserves all formatting
+- **More Accurate**: LLM determines appropriate edit type
+- **Professional Output**: GitHub docs style tables
+- **Maintainable**: Clear separation of concerns
+
+### Reliability Improvements
+- **Error Handling**: Graceful fallbacks for each workflow
+- **Formatting Safety**: Safe clearing prevents document corruption
+- **Provider Compatibility**: Works with all LLM providers
+
+## Usage
+
+### Automatic Operation
+
+The new workflow operates automatically when:
+- `NEW_DOCX_WORKFLOW=true` (default)
+- Processing DOCX files in documentation updates
+- Commit webhooks trigger documentation updates
+
+### Manual Testing
+
+Test individual workflows:
+
+```python
+from utils.docx_line_editor import DocxLineEditor
+from utils.docx_paragraph_inserter import DocxParagraphInserter
+from utils.docx_table_editor import DocxTableEditor
+
+# Test line editing
+line_editor = DocxLineEditor()
+updated_docx = line_editor.edit_document_lines(docx_bytes, commit_context, llm_service)
+
+# Test paragraph insertion
+paragraph_inserter = DocxParagraphInserter()
+updated_docx = paragraph_inserter.insert_paragraph(docx_bytes, commit_context, llm_service)
+
+# Test table editing
+table_editor = DocxTableEditor()
+updated_docx = table_editor.edit_tables(docx_bytes, commit_context, llm_service)
+```
+
+## Migration from Enhanced Workflow
+
+### Deprecated Components
+
+The following components are no longer used:
+- `test_step_by_step/step1_docx_to_md.py`
+- `test_step_by_step/step2_md_to_docx.py`
+- `test_step_by_step/step3_improved.py`
+- `test_step_by_step/step4_line_by_line.py`
+- `test_step_by_step/step5_formatting_extraction.py`
+- `ENHANCED_DOCX_WORKFLOW` environment variable
+
+### Backward Compatibility
+
+- Old workflow can be re-enabled by setting `NEW_DOCX_WORKFLOW=false`
+- Fallback to basic DOCX processing if new workflow fails
+- All existing functionality preserved
+
+## Testing
+
+### Test Coverage
+
+1. **Unit Tests**: Each workflow module tested independently
+2. **Integration Tests**: Full workflow with different commit types
+3. **Formatting Tests**: Verify formatting preservation
+4. **Error Handling Tests**: Test fallback scenarios
+5. **Provider Tests**: Test with different LLM providers
+
+### Test Scenarios
+
+- Line editing with various formatting (bold, italic, colors)
+- Paragraph insertion in different document locations
+- Table updates with different data structures
+- Error scenarios and fallback behavior
+- Large document processing
+- Different LLM provider compatibility
+
+## Troubleshooting
 
 ### Common Issues
-- **Missing dependencies**: Ensure all Step 1-5 modules are available
-- **LLM timeouts**: Check Ollama/LLM provider configuration
-- **File permissions**: Ensure write access to temporary directories
-- **Memory issues**: Large DOCX files may require more memory
+
+1. **Formatting Loss**: Check if safe clearing is working properly
+2. **LLM Errors**: Verify LLM service configuration
+3. **Workflow Selection**: Check edit type determination logic
+4. **Performance Issues**: Monitor resource usage during processing
+
+### Debug Mode
+
+Enable debug logging:
+
+```python
+import logging
+logging.getLogger('utils.docx_line_editor').setLevel(logging.DEBUG)
+logging.getLogger('utils.docx_paragraph_inserter').setLevel(logging.DEBUG)
+logging.getLogger('utils.docx_table_editor').setLevel(logging.DEBUG)
+```
 
 ## Future Enhancements
 
-### Potential Improvements
-1. **Caching**: Cache intermediate results for faster processing
-2. **Parallel Processing**: Process multiple DOCX files simultaneously
-3. **Custom Templates**: Support for custom formatting templates
-4. **Batch Processing**: Process multiple files in a single workflow
-5. **Progress Tracking**: Real-time progress updates for long operations
+### Planned Features
 
-### Configuration Options
-- Processing timeout settings
-- Memory usage limits
-- Custom formatting rules
-- LLM model selection per step
+1. **Custom Formatting Styles**: User-defined table formatting
+2. **Batch Processing**: Process multiple documents simultaneously
+3. **Formatting Templates**: Predefined formatting templates
+4. **Advanced Table Features**: Complex table operations
+5. **Document Comparison**: Before/after document comparison
 
-## Conclusion
+### Performance Optimizations
 
-The enhanced DOCX workflow integration provides a seamless, automatic, and high-quality solution for processing DOCX files in the main workflow. It combines the power of the Step 1-5 workflow with the robustness of the existing system, providing both advanced features and reliable fallback mechanisms.
-
-The integration is production-ready and can be easily enabled/disabled based on requirements.
+1. **Caching**: Cache formatting information
+2. **Parallel Processing**: Process multiple workflows in parallel
+3. **Memory Optimization**: Reduce memory usage for large documents
+4. **Streaming**: Stream processing for very large documents
