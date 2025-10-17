@@ -54,7 +54,7 @@ class OpenAIProvider(BaseLLMProvider):
                 f"{self.base_url}/chat/completions",
                 json=payload,
                 headers=headers,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             
@@ -115,7 +115,7 @@ class AnthropicProvider(BaseLLMProvider):
                 "https://api.anthropic.com/v1/messages",
                 json=payload,
                 headers=headers,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             
@@ -175,7 +175,7 @@ class MistralProvider(BaseLLMProvider):
                 "https://api.mistral.ai/v1/chat/completions",
                 json=payload,
                 headers=headers,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             
@@ -235,7 +235,7 @@ class GemmaProvider(BaseLLMProvider):
                 "https://generativelanguage.googleapis.com/v1beta/models/gemma-7b-it:generateContent",
                 json=payload,
                 headers=headers,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             
@@ -295,7 +295,7 @@ class CohereProvider(BaseLLMProvider):
                 "https://api.cohere.ai/v1/chat",
                 json=payload,
                 headers=headers,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             
@@ -373,7 +373,7 @@ class OllamaProvider(BaseLLMProvider):
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=300
+                timeout=1200
             )
             response.raise_for_status()
             

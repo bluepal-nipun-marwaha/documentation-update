@@ -833,7 +833,7 @@ class ExistingRepoWorkflow:
             from services.rag_service import RAGService
             rag_client = self._create_embeddings_client()
             if rag_client:
-                rag_service = RAGService(rag_client, settings.ai.dict())
+                rag_service = RAGService(rag_client, settings.ai.model_dump())
                 
                 # Step 1.6a: Analyze commit impact
                 logger.info("🔍 Analyzing commit impact with LLM...")
@@ -2901,7 +2901,7 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
     
     def _process_docx_with_new_workflow_fixed(self, original_content: bytes, commit_context: dict, llm_service) -> bytes:
         """
-        Process DOCX files using the new fixed conditional workflow dispatcher.
+        Process DOCX files using heading-by-heading approach with formatting preservation.
         
         Args:
             original_content: Original DOCX file as bytes
@@ -2912,38 +2912,67 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
             Updated DOCX file as bytes
         """
         try:
-            logger.info("🔄 Starting new DOCX workflow dispatcher (fixed version)")
+            logger.info("🔄 Starting heading-by-heading DOCX workflow with formatting preservation")
             
-            # Determine the type of edit needed
-            edit_type = llm_service.determine_docx_edit_type(commit_context, "")
+            import io
+            import tempfile
+            import os
             
-            logger.info(f"📋 Determined edit type: {edit_type}")
+            # Create a temporary file for processing
+            with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as temp_file:
+                temp_file.write(original_content)
+                temp_file_path = temp_file.name
             
-            # Route to appropriate workflow using fixed modules
-            if edit_type == "edit_line":
-                logger.info("📝 Using line editor workflow (fixed)")
-                from utils.docx_line_editor_fixed import DocxLineEditor
-                editor = DocxLineEditor()
-                return editor.edit_document_lines(original_content, commit_context, llm_service)
+            try:
+                # Get RAG context
+                rag_context = commit_context.get('rag_context', '')
                 
-            elif edit_type == "add_paragraph":
-                logger.info("📝 Using paragraph inserter workflow (fixed)")
-                from utils.docx_paragraph_inserter_fixed import DocxParagraphInserter
-                inserter = DocxParagraphInserter()
-                return inserter.insert_new_paragraphs(original_content, commit_context, llm_service)
+                # Use the new heading-by-heading approach
+                result = llm_service.process_docx_with_heading_by_heading(
+                    temp_file_path, 
+                    commit_context, 
+                    rag_context
+                )
                 
-            elif edit_type == "edit_table":
-                logger.info("📝 Using table editor workflow (fixed)")
-                from utils.docx_table_editor_fixed import DocxTableEditor
-                editor = DocxTableEditor()
-                return editor.edit_document_tables(original_content, commit_context, llm_service)
-                
-            else:
-                logger.info("📝 No changes needed")
-                return original_content
+                if result['success']:
+                    logger.info(f"✅ Heading-by-heading processing completed successfully")
+                    logger.info(f"📊 Headings analyzed: {result['headings_analyzed']}")
+                    logger.info(f"🎯 Relevant headings: {result['relevant_headings']}")
+                    logger.info(f"📝 Updates made: {len(result['updates_made'])}")
+                    
+                    # Log detailed updates
+                    for update in result['updates_made']:
+                        logger.info(f"  📋 [{update['relevance_score']}/10] {update['heading']}")
+                        logger.info(f"     Added: {update['content_added'][:80]}...")
+                        logger.info(f"     LLM Reasoning: {update['llm_reasoning']}")
+                        logger.info(f"     Formatting Preserved: {update['formatting_preserved']} runs")
+                    
+                    # Get the updated content from the result
+                    if 'updated_content' in result:
+                        updated_content = result['updated_content']
+                        logger.info(f"✅ Retrieved updated content from LLM service ({len(updated_content)} bytes)")
+                    else:
+                        # Fallback: read from temp file
+                        with open(temp_file_path, 'rb') as updated_file:
+                            updated_content = updated_file.read()
+                        logger.info(f"⚠️ Fallback: read updated content from temp file ({len(updated_content)} bytes)")
+                    
+                    return updated_content
+                else:
+                    logger.error(f"❌ Heading-by-heading processing failed: {result['error']}")
+                    logger.info("🔄 Falling back to original content")
+                    return original_content
+                    
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️ Could not clean up temporary file: {cleanup_error}")
                 
         except Exception as e:
-            logger.error(f"❌ New DOCX workflow failed: {str(e)}")
+            logger.error(f"❌ Error in heading-by-heading DOCX workflow: {e}")
+            logger.info("🔄 Falling back to original content")
             return original_content
     
     def start(self):
