@@ -320,7 +320,7 @@ class OllamaProvider(BaseLLMProvider):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.base_url = config.get('ollama_base_url', 'http://localhost:11434')
-        self.model = config.get('ollama_model', 'qwen2.5:7b')
+        self.model = config.get('llm_model', config.get('ollama_model', 'qwen2.5:7b'))
         self.use_gpu = config.get('use_gpu', True)
         self.model_manager = ModelManager(
             github_repo=config.get('github_model_repo', ''),
@@ -342,12 +342,7 @@ class OllamaProvider(BaseLLMProvider):
         if not self.is_available():
             raise Exception("Ollama provider not available - Ollama not running")
         
-        # Ensure model is available
-        try:
-            self.model_manager.download_model(self.model)
-        except Exception as e:
-            self.logger.warning(f"Could not download model {self.model}: {str(e)}")
-        
+        # Note: Ollama manages its own models, no need to download from GitHub
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

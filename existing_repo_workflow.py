@@ -2942,10 +2942,16 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
                     
                     # Log detailed updates
                     for update in result['updates_made']:
-                        logger.info(f"  📋 [{update['relevance_score']}/10] {update['heading']}")
-                        logger.info(f"     Added: {update['content_added'][:80]}...")
-                        logger.info(f"     LLM Reasoning: {update['llm_reasoning']}")
-                        logger.info(f"     Formatting Preserved: {update['formatting_preserved']} runs")
+                        relevance_score = update.get('relevance_score', 'N/A')
+                        heading = update.get('heading', 'Unknown')
+                        content_added = update.get('content_added', 'No content')
+                        llm_reasoning = update.get('llm_reasoning', 'No reasoning provided')
+                        formatting_preserved = update.get('formatting_preserved', 0)
+                        
+                        logger.info(f"  📋 [{relevance_score}/10] {heading}")
+                        logger.info(f"     Added: {content_added[:80]}...")
+                        logger.info(f"     LLM Reasoning: {llm_reasoning}")
+                        logger.info(f"     Formatting Preserved: {formatting_preserved} runs")
                     
                     # Get the updated content from the result
                     if 'updated_content' in result:

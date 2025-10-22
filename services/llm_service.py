@@ -697,60 +697,104 @@ class LLMService:
             
             logger.info(f"Found {len(headings_with_content)} headings with content")
             
-            # Step 2: Analyze relevance for headings with content
+            # Step 2: Use RAG to find relevant sections based on commit diff summary
             relevant_headings = []
             
-            for section in headings_with_content:
-                heading = section['heading']
-                heading_lower = heading.lower()
-                commit_lower = commit_message.lower()
-                
-                relevance_score = 0
-                reasons = []
-                
-                # Check for feature-related keywords
-                if any(word in commit_lower for word in ['feat', 'feature', 'add', 'new']):
-                    if any(word in heading_lower for word in ['feature', 'example', 'usage', 'recommendation']):
-                        relevance_score += 3
-                        reasons.append("Commit adds new features")
-                
-                # Check for interactive/builder keywords
-                if any(word in commit_lower for word in ['interactive', 'builder', 'demo']):
-                    if any(word in heading_lower for word in ['example', 'demo', 'usage', 'recommendation']):
-                        relevance_score += 4
-                        reasons.append("Commit mentions interactive/builder")
-                
-                # Check file patterns
-                if any('example' in f.lower() for f in files_changed):
-                    if any(word in heading_lower for word in ['example', 'demo', 'usage']):
-                        relevance_score += 3
-                        reasons.append("Files include examples")
-                
-                if any('interactive' in f.lower() for f in files_changed):
-                    if any(word in heading_lower for word in ['feature', 'example', 'usage']):
-                        relevance_score += 3
-                        reasons.append("Files include interactive components")
-                
-                # Check for documentation changes
-                if any('readme' in f.lower() for f in files_changed):
-                    if any(word in heading_lower for word in ['example', 'usage', 'recommendation']):
-                        relevance_score += 2
-                        reasons.append("README files changed")
-                
-                # Only include headings with sufficient relevance
-                if relevance_score >= 3:
-                    relevant_headings.append({
-                        'heading': heading,
-                        'level': section['level'],
-                        'relevance_score': relevance_score,
-                        'reasons': reasons,
-                        'paragraphs': section['paragraphs'],
-                        'paragraph_index': section['paragraph_index']
-                    })
+            # First, generate a summary of the commit changes
+            diff_content = commit_context.get('diff', '')
+            commit_summary = self._generate_commit_summary(commit_message, files_changed, diff_content)
+            logger.info(f"Commit summary: {commit_summary}")
             
-            logger.info(f"Found {len(relevant_headings)} relevant headings with content")
+            # Use RAG to find relevant sections in the document
+            logger.info("Using RAG to find relevant document sections...")
+            relevant_sections = self._find_relevant_sections_with_rag(
+                commit_summary, headings_with_content, rag_context
+            )
             
-            # Step 3: Update relevant headings
+            # Process the RAG results
+            for section_data in relevant_sections:
+                section = section_data['section']
+                similarity_score = section_data.get('similarity_score', 0)
+                
+                relevant_headings.append({
+                    'heading': section['heading'],
+                    'level': section['level'],
+                    'relevance_score': int(similarity_score * 10),  # Convert to 1-10 scale
+                    'reasons': [f"RAG similarity: {similarity_score:.3f}"],
+                    'paragraphs': section['paragraphs'],
+                    'paragraph_index': section['paragraph_index']
+                })
+                
+                logger.info(f"RAG found relevant heading: {section['heading']} (similarity: {similarity_score:.3f})")
+            
+            logger.info(f"Found {len(relevant_headings)} RAG-relevant headings")
+            
+            # Step 3: Process ALL tables first (before processing headings)
+            logger.info("Processing all tables in document")
+            table_updates = []
+            
+            for table_idx, table in enumerate(doc.tables):
+                logger.info(f"Analyzing table {table_idx + 1}")
+                
+                try:
+                    # Extract table content
+                    table_data = self._extract_table_content(table)
+                    
+                    if not table_data:
+                        logger.info(f"Table {table_idx + 1} has no content, skipping")
+                        continue
+                    
+                    # Analyze table with LLM (using general commit context)
+                    table_analysis = self._analyze_table_with_llm(table_data, "Document Tables", "", commit_context)
+                    
+                    if table_analysis.get('needs_update', False):
+                        confidence = table_analysis.get('confidence', 0.0)
+                        
+                        # Get confidence threshold from configuration
+                        from utils.config import get_settings
+                        settings = get_settings()
+                        confidence_threshold = settings.document.table_confidence_threshold
+                        
+                        if confidence >= confidence_threshold:
+                            logger.info(f"Table {table_idx + 1} needs updates (confidence: {confidence:.2f}): {table_analysis.get('update_reason', 'No reason provided')}")
+                            
+                            # Update table data
+                            recommended_updates = table_analysis.get('recommended_updates', [])
+                            updated_table_data = self._update_table_with_new_data(table, table_data, recommended_updates)
+                            
+                            # Replace table in document
+                            success = self._replace_table_in_document(doc, table, updated_table_data, table_idx + 1)
+                            
+                            if success:
+                                logger.info(f"Successfully updated table {table_idx + 1}")
+                                table_updates.append({
+                                    'table_updated': True,
+                                    'table_index': table_idx + 1,
+                                    'table_purpose': table_analysis.get('table_purpose', 'Unknown'),
+                                    'updates_applied': len(recommended_updates),
+                                    'confidence': confidence
+                                })
+                            else:
+                                logger.error(f"Failed to update table {table_idx + 1}")
+                        else:
+                            logger.info(f"Table {table_idx + 1} update skipped - confidence {confidence:.2f} below threshold {confidence_threshold}")
+                            table_updates.append({
+                                'table_skipped': True,
+                                'table_index': table_idx + 1,
+                                'table_purpose': table_analysis.get('table_purpose', 'Unknown'),
+                                'skip_reason': f"Low confidence: {confidence:.2f} < {confidence_threshold}",
+                                'confidence': confidence
+                            })
+                    else:
+                        logger.info(f"Table {table_idx + 1} does not need updates")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing table {table_idx + 1}: {e}")
+                    continue
+            
+            logger.info(f"Table processing completed. Updated: {len([u for u in table_updates if u.get('table_updated')])} tables")
+            
+            # Step 4: Process headings for content updates
             updates_made = []
             
             for analysis in relevant_headings:
@@ -812,76 +856,6 @@ class LLMService:
                     })
                 else:
                     logger.error("Failed to find duplicated paragraph")
-                
-                # Step 4: Process tables within this heading section
-                logger.info(f"Processing tables for heading: {heading}")
-                
-                # Find tables that belong to this heading section
-                # We'll look for tables that appear after this heading and before the next heading
-                heading_start_index = analysis['paragraph_index']
-                next_heading_index = len(doc.paragraphs)  # Default to end of document
-                
-                # Find the next heading
-                for next_section in headings_with_content:
-                    if next_section['paragraph_index'] > heading_start_index:
-                        next_heading_index = next_section['paragraph_index']
-                        break
-                
-                # Find tables in this section
-                section_tables = []
-                for table_idx, table in enumerate(doc.tables):
-                    # Check if table is within this section
-                    # This is a simplified approach - in practice, you might need more sophisticated table-to-section mapping
-                    section_tables.append((table_idx, table))
-                
-                # Process each table in this section
-                for table_idx, table in section_tables:
-                    logger.info(f"Analyzing table {table_idx + 1} under heading: {heading}")
-                    
-                    try:
-                        # Extract table content
-                        table_data = self._extract_table_content(table)
-                        
-                        if not table_data:
-                            logger.info(f"Table {table_idx + 1} has no content, skipping")
-                            continue
-                        
-                        # Get heading context (first paragraph under the heading)
-                        heading_context = ""
-                        if paragraphs:
-                            heading_context = paragraphs[0]['text'][:200] + "..." if len(paragraphs[0]['text']) > 200 else paragraphs[0]['text']
-                        
-                        # Analyze table with LLM
-                        table_analysis = self._analyze_table_with_llm(table_data, heading, heading_context, commit_context)
-                        
-                        if table_analysis.get('needs_update', False):
-                            logger.info(f"Table {table_idx + 1} needs updates: {table_analysis.get('update_reason', 'No reason provided')}")
-                            
-                            # Update table data
-                            recommended_updates = table_analysis.get('recommended_updates', [])
-                            updated_table_data = self._update_table_with_new_data(table, table_data, recommended_updates)
-                            
-                            # Replace table in document
-                            success = self._replace_table_in_document(doc, table, updated_table_data, table_idx + 1)
-                            
-                            if success:
-                                logger.info(f"Successfully updated table {table_idx + 1}")
-                                updates_made.append({
-                                    'heading': heading,
-                                    'table_updated': True,
-                                    'table_index': table_idx + 1,
-                                    'table_purpose': table_analysis.get('table_purpose', 'Unknown'),
-                                    'updates_applied': len(recommended_updates),
-                                    'confidence': table_analysis.get('confidence', 0.0)
-                                })
-                            else:
-                                logger.error(f"Failed to update table {table_idx + 1}")
-                        else:
-                            logger.info(f"Table {table_idx + 1} does not need updates")
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing table {table_idx + 1}: {e}")
-                        continue
             
             # Save the updated document and return the bytes
             import io
@@ -892,27 +866,373 @@ class LLMService:
             
             return {
                 'success': True,
-                'updates_made': updates_made,
+                'updates_made': updates_made + table_updates,  # Combine heading updates and table updates
                 'headings_analyzed': len(headings_with_content),
                 'relevant_headings': len(relevant_headings),
+                'tables_processed': len(doc.tables),
+                'tables_updated': len([u for u in table_updates if u.get('table_updated')]),
                 'method': 'heading_by_heading_with_formatting',
                 'updated_content': updated_content
             }
                 
         except Exception as e:
             logger.error(f"Error processing DOCX with heading-by-heading approach: {e}")
-        return {
+            return {
                 'success': False,
                 'error': str(e),
                 'method': 'heading_by_heading_with_formatting'
             }
     
-    def _generate_content_for_heading(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> str:
-        """Generate appropriate content for a specific heading."""
+    def _generate_commit_summary(self, commit_message: str, files_changed: List[str], diff_content: str) -> str:
+        """Generate a concise summary of what changed in the commit."""
+        try:
+            prompt = f"""
+            Analyze this commit and provide a concise summary of what was changed:
+            
+            Commit Message: {commit_message}
+            Files Changed: {', '.join(files_changed)}
+            Diff Content: {diff_content[:1000]}...
+            
+            Provide a 2-3 sentence summary focusing on:
+            - What new features or functionality was added
+            - What existing functionality was modified
+            - The main purpose and impact of the changes
+            
+            Summary:
+            """
+            
+            response = self.provider.generate_response(
+                prompt=prompt,
+                max_tokens=200,
+                temperature=0.3
+            )
+            return response.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating commit summary: {e}")
+            return f"Commit '{commit_message}' modified {len(files_changed)} files: {', '.join(files_changed)}"
+    
+    def _generate_heading_summary(self, heading: str, content: str) -> str:
+        """Generate a concise summary of what a heading section is about."""
+        try:
+            prompt = f"""
+            Analyze this documentation heading and its content to provide a concise summary:
+            
+            Heading: {heading}
+            Content: {content[:800]}...
+            
+            Provide a 1-2 sentence summary focusing on:
+            - What this section is about
+            - What topics or concepts it covers
+            - The main purpose of this section
+            
+            Summary:
+            """
+            
+            response = self.provider.generate_response(
+                prompt=prompt,
+                max_tokens=150,
+                temperature=0.3
+            )
+            return response.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating heading summary: {e}")
+            return f"Section about {heading.lower()}"
+    
+    def _analyze_semantic_relevance(self, commit_summary: str, heading_summary: str, heading: str, commit_message: str) -> Dict[str, Any]:
+        """Use LLM to determine if a heading is semantically relevant to the commit changes."""
+        try:
+            prompt = f"""
+            Analyze whether this documentation heading is relevant to the commit changes.
+            
+            COMMIT CHANGES:
+            {commit_summary}
+            
+            HEADING SECTION:
+            Heading: {heading}
+            Content Summary: {heading_summary}
+            
+            Determine if this heading section should be updated based on the commit changes.
+            Consider semantic relevance, not just keyword matching.
+            
+            Respond with JSON:
+            {{
+                "is_relevant": true/false,
+                "relevance_score": 1-10,
+                "reasons": ["reason1", "reason2"],
+                "reason": "Brief explanation of relevance or why not relevant"
+            }}
+            
+            Scoring guidelines:
+            - 9-10: Directly related to the changes (e.g., new feature documentation)
+            - 7-8: Strongly related (e.g., usage examples, recommendations)
+            - 5-6: Moderately related (e.g., general concepts that apply)
+            - 3-4: Weakly related (e.g., tangential concepts)
+            - 1-2: Barely related (e.g., unrelated technical details)
+            - 0: Not relevant at all
+            """
+            
+            response = self.provider.generate_response(
+                prompt=prompt,
+                max_tokens=300,
+                temperature=0.2
+            )
+            
+            # Parse JSON response
+            import json
+            try:
+                # Extract JSON from response
+                json_start = response.find('{')
+                json_end = response.rfind('}') + 1
+                if json_start != -1 and json_end != -1:
+                    json_str = response[json_start:json_end]
+                    analysis = json.loads(json_str)
+                    
+                    # Validate required fields
+                    if all(key in analysis for key in ['is_relevant', 'relevance_score', 'reasons', 'reason']):
+                        return analysis
+                    else:
+                        logger.warning("Invalid analysis response structure")
+                        return self._create_fallback_relevance_analysis(heading, commit_message)
+                else:
+                    logger.warning("Could not find JSON in response")
+                    return self._create_fallback_relevance_analysis(heading, commit_message)
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON response: {e}")
+                return self._create_fallback_relevance_analysis(heading, commit_message)
+                
+        except Exception as e:
+            logger.error(f"Error analyzing semantic relevance: {e}")
+            return self._create_fallback_relevance_analysis(heading, commit_message)
+    
+    def _analyze_batch_semantic_relevance(self, commit_summary: str, heading_summaries: List[Dict], commit_message: str) -> List[Dict[str, Any]]:
+        """Use LLM to analyze semantic relevance for all headings in a single batch comparison."""
+        try:
+            # Create a formatted list of all headings and their summaries
+            headings_text = ""
+            for i, heading_data in enumerate(heading_summaries):
+                headings_text += f"{i+1}. HEADING: {heading_data['heading']}\n"
+                headings_text += f"   SUMMARY: {heading_data['summary']}\n\n"
+            
+            prompt = f"""
+            Analyze the semantic relevance between a commit change and multiple documentation headings.
+            
+            COMMIT SUMMARY:
+            {commit_summary}
+            
+            COMMIT MESSAGE: {commit_message}
+            
+            AVAILABLE HEADINGS AND THEIR SUMMARIES:
+            {headings_text}
+            
+            For each heading, determine if it's semantically relevant to the commit changes.
+            Consider:
+            - Does the heading content relate to the changes made?
+            - Would updating this section make sense for users?
+            - Is there conceptual overlap between the commit and heading?
+            
+            Respond with JSON only, analyzing ALL headings:
+            {{
+                "headings": [
+                    {{
+                        "heading_number": 1,
+                        "heading_name": "heading name",
+                        "is_relevant": true/false,
+                        "relevance_score": 1-10,
+                        "reasons": ["reason1", "reason2"],
+                        "reason": "brief explanation if not relevant"
+                    }},
+                    ...
+                ]
+            }}
+            """
+            
+            response = self.provider.generate_response(
+                prompt,
+                max_tokens=800,
+                temperature=0.3
+            )
+            
+            # Parse JSON response
+            try:
+                import json
+                analysis = json.loads(response.strip())
+                
+                # Convert the response back to the expected format
+                results = []
+                for heading_analysis in analysis.get('headings', []):
+                    heading_number = heading_analysis.get('heading_number', 1)
+                    if 1 <= heading_number <= len(heading_summaries):
+                        heading_data = heading_summaries[heading_number - 1]
+                        
+                        results.append({
+                            'heading': heading_data['heading'],
+                            'section': heading_data['section'],
+                            'is_relevant': heading_analysis.get('is_relevant', False),
+                            'relevance_score': heading_analysis.get('relevance_score', 0),
+                            'reasons': heading_analysis.get('reasons', []),
+                            'reason': heading_analysis.get('reason', 'Not relevant')
+                        })
+                
+                return results
+                
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON response from LLM, using fallback")
+                return self._create_fallback_batch_relevance_analysis(heading_summaries, commit_message)
+            
+        except Exception as e:
+            logger.error(f"Error analyzing batch semantic relevance: {e}")
+            return self._create_fallback_batch_relevance_analysis(heading_summaries, commit_message)
+    
+    def _create_fallback_relevance_analysis(self, heading: str, commit_message: str) -> Dict[str, Any]:
+        """Create a fallback relevance analysis when LLM analysis fails."""
         heading_lower = heading.lower()
         commit_lower = commit_message.lower()
         
-        # Extract key information
+        # Simple keyword-based fallback
+        if any(word in commit_lower for word in ['interactive', 'builder', 'demo']):
+            if any(word in heading_lower for word in ['example', 'demo', 'usage', 'recommendation']):
+                return {
+                    'is_relevant': True,
+                    'relevance_score': 7,
+                    'reasons': ['Contains interactive/builder keywords'],
+                    'reason': 'Fallback: keyword matching suggests relevance'
+                }
+        
+        return {
+            'is_relevant': False,
+            'relevance_score': 0,
+            'reasons': [],
+            'reason': 'Fallback: no clear relevance found'
+        }
+    
+    def _create_fallback_batch_relevance_analysis(self, heading_summaries: List[Dict], commit_message: str) -> List[Dict[str, Any]]:
+        """Create a fallback batch relevance analysis when LLM analysis fails."""
+        results = []
+        commit_lower = commit_message.lower()
+        
+        for heading_data in heading_summaries:
+            heading = heading_data['heading']
+            heading_lower = heading.lower()
+            
+            # Simple keyword-based fallback for each heading
+            if any(word in commit_lower for word in ['interactive', 'builder', 'demo']):
+                if any(word in heading_lower for word in ['example', 'demo', 'usage', 'recommendation']):
+                    results.append({
+                        'heading': heading,
+                        'section': heading_data['section'],
+                        'is_relevant': True,
+                        'relevance_score': 7,
+                        'reasons': ['Contains interactive/builder keywords'],
+                        'reason': 'Fallback: keyword matching suggests relevance'
+                    })
+                    continue
+            
+            results.append({
+                'heading': heading,
+                'section': heading_data['section'],
+                'is_relevant': False,
+                'relevance_score': 0,
+                'reasons': [],
+                'reason': 'Fallback: no clear relevance found'
+            })
+        
+        return results
+    
+    def _find_relevant_sections_with_rag(self, commit_summary: str, headings_with_content: List[Dict], rag_context: str) -> List[Dict]:
+        """Use RAG to find relevant document sections based on commit summary."""
+        try:
+            from services.rag_service import RAGService
+            from utils.config import get_settings
+            
+            settings = get_settings()
+            rag_service = RAGService(settings.ai)
+            
+            # Create document chunks from headings
+            document_chunks = []
+            for i, section in enumerate(headings_with_content):
+                heading = section['heading']
+                paragraphs = section['paragraphs']
+                
+                # Create content chunk
+                content = f"HEADING: {heading}\n\n"
+                content += "\n".join([p['text'] for p in paragraphs[:3]])  # First 3 paragraphs
+                
+                document_chunks.append({
+                    'id': f"heading_{i}",
+                    'content': content,
+                    'heading': heading,
+                    'section': section
+                })
+            
+            logger.info(f"Created {len(document_chunks)} document chunks for RAG analysis")
+            
+            # Use RAG to find similar sections
+            query = f"COMMIT SUMMARY: {commit_summary}\n\nFind document sections that should be updated based on this commit."
+            
+            # Get embeddings for the query
+            query_embedding = rag_service.get_query_embedding(query)
+            
+            # Get embeddings for document chunks and calculate similarities
+            relevant_sections = []
+            for chunk in document_chunks:
+                try:
+                    chunk_embedding = rag_service.get_query_embedding(chunk['content'])
+                    
+                    # Calculate cosine similarity
+                    import numpy as np
+                    similarity = np.dot(query_embedding, chunk_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(chunk_embedding)
+                    )
+                    
+                    # Only include sections with reasonable similarity
+                    if similarity > 0.1:  # Threshold for relevance
+                        relevant_sections.append({
+                            'section': chunk['section'],
+                            'similarity_score': float(similarity),
+                            'content': chunk['content']
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Error processing chunk {chunk['heading']}: {e}")
+                    continue
+            
+            # Sort by similarity score (highest first)
+            relevant_sections.sort(key=lambda x: x['similarity_score'], reverse=True)
+            
+            logger.info(f"RAG found {len(relevant_sections)} relevant sections")
+            return relevant_sections
+            
+        except Exception as e:
+            logger.error(f"Error in RAG-based section finding: {e}")
+            # Fallback to simple keyword matching
+            return self._fallback_keyword_matching(commit_summary, headings_with_content)
+    
+    def _fallback_keyword_matching(self, commit_summary: str, headings_with_content: List[Dict]) -> List[Dict]:
+        """Fallback keyword matching when RAG fails."""
+        commit_lower = commit_summary.lower()
+        relevant_sections = []
+        
+        for section in headings_with_content:
+            heading = section['heading']
+            heading_lower = heading.lower()
+            
+            # Simple keyword matching
+            if any(word in commit_lower for word in ['interactive', 'builder', 'demo', 'example']):
+                if any(word in heading_lower for word in ['example', 'demo', 'usage', 'recommendation', 'guide']):
+                    relevant_sections.append({
+                        'section': section,
+                        'similarity_score': 0.7,  # Default similarity score
+                        'content': f"HEADING: {heading}"
+                    })
+        
+        return relevant_sections
+    
+    def _generate_content_for_heading(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> str:
+        commit_lower = commit_message.lower()
+        heading_lower = heading.lower()
         feature_name = "Interactive Builder"
         if "interactive" in commit_lower and "builder" in commit_lower:
             feature_name = "Interactive Builder"
@@ -1341,7 +1661,7 @@ RESPOND WITH VALID JSON ONLY:
 }}
 """
             
-            response = self.llm_provider.generate_response(
+            response = self.provider.generate_response(
                 prompt=prompt,
                 max_tokens=1000,
                 temperature=0.3

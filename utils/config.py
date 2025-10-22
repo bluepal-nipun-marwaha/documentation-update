@@ -48,12 +48,12 @@ class LoggingConfig(BaseSettings):
 class AIConfig(BaseSettings):
     """AI/LLM configuration settings."""
     # LLM Provider Selection
-    llm_provider: str = Field(default="ollama", description="LLM provider: ollama, openai, anthropic, mistral, gemma, cohere")
-    llm_model: str = Field(default="qwen2.5:7b", description="LLM model name")
+    llm_provider: str = Field(default="ollama", description="LLM provider: ollama, openai, anthropic, mistral, gemma, cohere", alias="LLM_PROVIDER")
+    llm_model: str = Field(default="qwen2.5:7b", description="LLM model name", alias="LLM_MODEL")
     
     # Embeddings Provider Selection
-    embeddings_provider: str = Field(default="nomic", description="Embeddings provider: openai, cohere, gemini, nomic, e5, sentence_transformers")
-    embeddings_model: str = Field(default="nomic-embed-text", description="Embeddings model name")
+    embeddings_provider: str = Field(default="nomic", description="Embeddings provider: openai, cohere, gemini, nomic, e5, sentence_transformers", alias="EMBEDDINGS_PROVIDER")
+    embeddings_model: str = Field(default="nomic-embed-text", description="Embeddings model name", alias="EMBEDDINGS_MODEL")
     
     # Model Management
     use_github_models: bool = Field(default=True, description="Use GitHub for model downloads")
@@ -113,6 +113,9 @@ class DocumentConfig(BaseSettings):
     # DOCX Workflow Configuration
     new_docx_workflow_enabled: bool = Field(default=True, description="Enable new conditional DOCX workflow", alias="NEW_DOCX_WORKFLOW")
     docx_table_formatting: str = Field(default="github_docs", description="Table formatting style: github_docs, basic", alias="DOCX_TABLE_FORMATTING")
+    
+    # Table Update Configuration
+    table_confidence_threshold: float = Field(default=0.5, description="Minimum confidence threshold for table updates (0.0-1.0)", alias="TABLE_CONFIDENCE_THRESHOLD")
     
     class Config:
         env_file = ".env"
