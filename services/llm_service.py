@@ -437,24 +437,60 @@ class LLMService:
             diff_preview = diff_content[:2000] if len(diff_content) > 2000 else diff_content
             
             prompt = f"""
-            Analyze this commit diff and provide a clear, concise summary of what changed.
-            Focus on the key changes that would affect documentation.
-            
-            COMMIT MESSAGE: {commit_message}
-            FILES CHANGED: {', '.join(files_changed)}
-            
-            DIFF CONTENT:
-            {diff_preview}
-            
-            Provide a structured summary covering:
-            1. What new features or functionality was added
-            2. What existing functionality was modified
-            3. What files were affected and how
-            4. Key technical details that users need to know
-            5. Any breaking changes or important notes
-            
-            Keep the summary concise but comprehensive. Focus on changes that would require documentation updates.
-            """
+                You are an expert code-change summarizer for an automated documentation update system.
+                You will be given details of a Git commit and its diff.
+
+                Your goal is to:
+                1. Analyze the commit message and diff precisely.
+                2. Extract a structured summary of what changed.
+                3. Focus on information relevant to documentation updates.
+
+                ---
+
+                COMMIT MESSAGE:
+                {commit_message}
+
+                FILES CHANGED:
+                {', '.join(files_changed)}
+
+                DIFF CONTENT:
+                {diff_preview}
+
+                ---
+
+                ### OUTPUT REQUIREMENTS
+
+                Provide a clear, structured **natural-language summary** with the following sections:
+
+                #### 1. Overall Summary
+                A concise 2–3 sentence overview of what the commit does and its intent.
+
+                #### 2. Key Changes by File
+                For each affected file, list:
+                - Functions, classes, or methods added, modified, or removed  
+                - Each entry should include:
+                - **Name** of the function/class/method  
+                - **Parameters** (if any)  
+                - **Return type** (if inferable)  
+                - **Brief description** of what changed or what it does  
+
+                #### 3. Technical Notes
+                Include any:
+                - New public APIs, CLI flags, config options, or environment variables  
+                - Changes in function behavior or side effects  
+                - Breaking changes, deprecations, or migration notes  
+
+                ---
+
+                ### STYLE NOTES
+                - Keep it concise but informative — think “developer-facing changelog.”  
+                - Focus on documentation-impacting changes.  
+                - Ignore trivial edits (comments, formatting, etc.).  
+                - Use bullet points or subheadings for readability.
+
+                Now analyze the commit and produce the structured summary.
+                """
+
             
             if self.provider and self.provider.is_available():
                 response = self.provider.generate_response(prompt)
@@ -747,7 +783,7 @@ class LLMService:
                     # Analyze table with LLM (using general commit context)
                     table_analysis = self._analyze_table_with_llm(table_data, "Document Tables", "", commit_context)
                     
-                    if table_analysis.get('needs_update', False):
+                    if table_analysis.get('is_relevant', False):
                         confidence = table_analysis.get('confidence', 0.0)
                         
                         # Get confidence threshold from configuration
@@ -755,12 +791,14 @@ class LLMService:
                         settings = get_settings()
                         confidence_threshold = settings.document.table_confidence_threshold
                         
-                        if confidence >= confidence_threshold:
-                            logger.info(f"Table {table_idx + 1} needs updates (confidence: {confidence:.2f}): {table_analysis.get('update_reason', 'No reason provided')}")
+                        # Also check if we can actually add a row
+                        can_add_row = table_analysis.get('can_add_row', False)
+                        
+                        if confidence >= confidence_threshold and can_add_row:
+                            logger.info(f"Table {table_idx + 1} needs updates (confidence: {confidence:.2f}): {table_analysis.get('relevance_reason', 'No reason provided')}")
                             
                             # Update table data
-                            recommended_updates = table_analysis.get('recommended_updates', [])
-                            updated_table_data = self._update_table_with_new_data(table, table_data, recommended_updates)
+                            updated_table_data = self._update_table_with_new_data(table, table_data, table_analysis)
                             
                             # Replace table in document
                             success = self._replace_table_in_document(doc, table, updated_table_data, table_idx + 1)
@@ -771,7 +809,7 @@ class LLMService:
                                     'table_updated': True,
                                     'table_index': table_idx + 1,
                                     'table_purpose': table_analysis.get('table_purpose', 'Unknown'),
-                                    'updates_applied': len(recommended_updates),
+                                    'updates_applied': 1 if can_add_row else 0,
                                     'confidence': confidence
                                 })
                             else:
@@ -886,25 +924,68 @@ class LLMService:
     def _generate_commit_summary(self, commit_message: str, files_changed: List[str], diff_content: str) -> str:
         """Generate a concise summary of what changed in the commit."""
         try:
+            # Truncate diff content for prompt
+            diff_preview = diff_content[:2000] + "..." if len(diff_content) > 2000 else diff_content
+            
             prompt = f"""
-            Analyze this commit and provide a concise summary of what was changed:
-            
-            Commit Message: {commit_message}
-            Files Changed: {', '.join(files_changed)}
-            Diff Content: {diff_content[:1000]}...
-            
-            Provide a 2-3 sentence summary focusing on:
-            - What new features or functionality was added
-            - What existing functionality was modified
-            - The main purpose and impact of the changes
-            
-            Summary:
-            """
+You are an expert code-change summarizer for an automated documentation update system.
+You will be given details of a Git commit and its diff.
+
+Your goal is to:
+1. Analyze the commit message and diff precisely.
+2. Extract a structured summary of what changed.
+3. Focus on information relevant to documentation updates.
+
+---
+
+COMMIT MESSAGE:
+{commit_message}
+
+FILES CHANGED:
+{', '.join(files_changed)}
+
+DIFF CONTENT:
+{diff_preview}
+
+---
+
+### OUTPUT REQUIREMENTS
+
+Provide a clear, structured **natural-language summary** with the following sections:
+
+#### 1. Overall Summary
+A concise 2–3 sentence overview of what the commit does and its intent.
+
+#### 2. Key Changes by File
+For each affected file, list:
+- Functions, classes, or methods added, modified, or removed  
+- Each entry should include:
+- **Name** of the function/class/method  
+- **Parameters** (if any)  
+- **Return type** (if inferable)  
+- **Brief description** of what changed or what it does  
+
+#### 3. Technical Notes
+Include any:
+- New public APIs, CLI flags, config options, or environment variables  
+- Changes in function behavior or side effects  
+- Breaking changes, deprecations, or migration notes  
+
+---
+
+### STYLE NOTES
+- Keep it concise but informative — think "developer-facing changelog."  
+- Focus on documentation-impacting changes.  
+- Ignore trivial edits (comments, formatting, etc.).  
+- Use bullet points or subheadings for readability.
+
+Now analyze the commit and produce the structured summary.
+"""
             
             response = self.provider.generate_response(
                 prompt=prompt,
-                max_tokens=200,
-                temperature=0.3
+                max_tokens=800,
+                temperature=0.2
             )
             return response.strip()
             
@@ -1600,9 +1681,157 @@ class LLMService:
         logger.info(f"Extracted table with {len(table_data)} rows and {len(table_data[0]) if table_data else 0} columns")
         return table_data
     
+    def _convert_table_to_json(self, table_data: List[List[str]]) -> Dict[str, Any]:
+        """
+        Convert table data to structured JSON format for better analysis.
+        
+        Args:
+            table_data: Table content as list of rows
+            
+        Returns:
+            Structured JSON representation of the table
+        """
+        if not table_data:
+            return {"headers": [], "rows": [], "column_count": 0, "row_count": 0}
+        
+        # First row is typically headers
+        headers = table_data[0] if table_data else []
+        data_rows = table_data[1:] if len(table_data) > 1 else []
+        
+        # Convert rows to objects with header keys
+        structured_rows = []
+        for row in data_rows:
+            row_dict = {}
+            for i, cell_value in enumerate(row):
+                header = headers[i] if i < len(headers) else f"Column_{i+1}"
+                row_dict[header] = cell_value
+            structured_rows.append(row_dict)
+        
+        return {
+            "headers": headers,
+            "rows": structured_rows,
+            "column_count": len(headers),
+            "row_count": len(data_rows),
+            "raw_data": table_data
+        }
+    
+    def _analyze_table_structure(self, table_json: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze table structure to understand column purposes and data patterns.
+        
+        Args:
+            table_json: Structured JSON representation of the table
+            
+        Returns:
+            Analysis of table structure and patterns
+        """
+        headers = table_json.get("headers", [])
+        rows = table_json.get("rows", [])
+        
+        # Analyze column types and purposes
+        column_analysis = {}
+        for i, header in enumerate(headers):
+            column_values = [row.get(header, "") for row in rows if header in row]
+            
+            # Determine column type based on content patterns
+            column_type = "text"
+            if any(val.isdigit() for val in column_values if val):
+                column_type = "numeric"
+            elif any(val.lower() in ["true", "false", "yes", "no"] for val in column_values if val):
+                column_type = "boolean"
+            elif any(val.lower() in ["high", "medium", "low", "critical", "minor"] for val in column_values if val):
+                column_type = "priority"
+            
+            column_analysis[header] = {
+                "type": column_type,
+                "sample_values": column_values[:3],  # First 3 values as samples
+                "unique_values": len(set(column_values)),
+                "empty_count": sum(1 for val in column_values if not val.strip())
+            }
+        
+        # Analyze row patterns
+        row_patterns = {
+            "total_rows": len(rows),
+            "average_cell_length": sum(
+                sum(len(str(val)) for val in row.values()) 
+                for row in rows
+            ) / max(len(rows), 1) if rows else 0,
+            "common_patterns": []
+        }
+        
+        return {
+            "column_analysis": column_analysis,
+            "row_patterns": row_patterns,
+            "table_type": self._determine_table_type(headers, rows)
+        }
+    
+    def _determine_table_type(self, headers: List[str], rows: List[Dict]) -> str:
+        """
+        Determine the type/purpose of the table based on headers and content.
+        
+        Args:
+            headers: Table column headers
+            rows: Table data rows
+            
+        Returns:
+            String describing the table type
+        """
+        header_text = " ".join(headers).lower()
+        
+        # Common table type patterns
+        if any(word in header_text for word in ["function", "method", "api", "command"]):
+            return "function_reference"
+        elif any(word in header_text for word in ["package", "library", "dependency", "module"]):
+            return "package_list"
+        elif any(word in header_text for word in ["test", "coverage", "status", "quality"]):
+            return "test_coverage"
+        elif any(word in header_text for word in ["example", "demo", "usage", "sample"]):
+            return "examples"
+        elif any(word in header_text for word in ["performance", "metric", "benchmark", "speed"]):
+            return "performance_metrics"
+        elif any(word in header_text for word in ["feature", "enhancement", "planned", "roadmap"]):
+            return "feature_roadmap"
+        elif any(word in header_text for word in ["download", "star", "popularity", "usage"]):
+            return "popularity_stats"
+        else:
+            return "general_data"
+    
+    def _fix_json_syntax(self, json_str: str) -> str:
+        """
+        Fix common JSON syntax issues that LLMs sometimes generate.
+        
+        Args:
+            json_str: Potentially malformed JSON string
+            
+        Returns:
+            Fixed JSON string
+        """
+        import re
+        
+        # Fix common issues
+        fixed = json_str
+        
+        # Remove comments (// style)
+        fixed = re.sub(r'//.*$', '', fixed, flags=re.MULTILINE)
+        
+        # Remove trailing commas before closing braces/brackets
+        fixed = re.sub(r',(\s*[}\]])', r'\1', fixed)
+        
+        # Fix single quotes to double quotes (but be careful with apostrophes in strings)
+        # This is tricky, so we'll be conservative
+        fixed = re.sub(r"'([^']*)':", r'"\1":', fixed)  # Keys
+        fixed = re.sub(r":\s*'([^']*)'", r': "\1"', fixed)  # String values
+        
+        # Fix unescaped quotes in strings (basic fix)
+        # This is complex, so we'll just log if we detect potential issues
+        if "'" in fixed and '"' in fixed:
+            logger.warning("Mixed quotes detected in JSON, may need manual review")
+        
+        return fixed
+    
     def _analyze_table_with_llm(self, table_data: List[List[str]], heading: str, heading_context: str, commit_context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Analyze table with LLM to understand its purpose and determine if updates are needed.
+        Simplified table analysis - understand headers, check row fit, and conditionally add rows.
         
         Args:
             table_data: Table content as list of rows
@@ -1614,111 +1843,156 @@ class LLMService:
             Dictionary with analysis results and update recommendations
         """
         try:
-            # Format table data for LLM
-            table_text = "Table Structure:\n"
-            for row_idx, row in enumerate(table_data):
-                table_text += f"Row {row_idx}: {' | '.join(row)}\n"
+            if not table_data or len(table_data) < 2:
+                logger.info(f"Table too small or empty - skipping analysis")
+                return {
+                    "table_purpose": "Empty or minimal table",
+                    "needs_update": False,
+                    "update_reason": "Table too small",
+                    "recommended_updates": [],
+                    "confidence": 0.0
+                }
+            
+            # Step 1: Understand the table headers
+            headers = table_data[0] if table_data else []
+            data_rows = table_data[1:] if len(table_data) > 1 else []
+            
+            logger.info(f"📊 Table Analysis - Headers: {headers}")
+            logger.info(f"📊 Table Analysis - Data rows: {len(data_rows)}")
+            
+            # Step 2: Analyze existing row patterns
+            row_patterns = []
+            for i, row in enumerate(data_rows[:5]):  # Analyze first 5 rows
+                if len(row) == len(headers):
+                    row_dict = {headers[j]: row[j] for j in range(len(headers))}
+                    row_patterns.append(row_dict)
+                    logger.info(f"📊 Row {i+1} pattern: {row_dict}")
+                else:
+                    logger.warning(f"⚠️ Row {i+1} has {len(row)} columns but table has {len(headers)} headers")
             
             commit_message = commit_context.get('message', '')
-            files_changed = commit_context.get('files', [])
             diff_summary = commit_context.get('diff_summary', '')
             
+            # Step 3: Simple LLM analysis for table purpose and relevance
             prompt = f"""
-You are analyzing a table within a document section to determine if it needs updates based on a commit.
+You are analyzing a table to determine if it needs updates based on a commit. Keep it simple and focused.
 
-TABLE CONTEXT:
+TABLE INFORMATION:
 - Section Heading: {heading}
 - Section Context: {heading_context}
-- Table Data:
-{table_text}
+- Table Headers: {headers}
+- Number of Columns: {len(headers)}
+- Number of Data Rows: {len(data_rows)}
 
 COMMIT INFORMATION:
 - Commit Message: {commit_message}
-- Files Changed: {', '.join(files_changed)}
 - Diff Summary: {diff_summary}
 
 ANALYSIS REQUIRED:
-1. Understand what this table represents and its purpose
-2. Analyze the column headers and row content structure
-3. Determine if the commit changes require table updates
-4. If updates are needed, specify what rows should be added/modified
+1. What is the purpose of this table based on the headers?
+2. Is this table relevant to the commit changes?
+3. If relevant, can we create a meaningful new row with data from the commit?
 
-RESPOND WITH VALID JSON ONLY:
+RESPOND WITH SIMPLE JSON (no complex structures):
 {{
     "table_purpose": "Brief description of what this table represents",
-    "column_analysis": "Analysis of column headers and their meaning",
-    "row_analysis": "Analysis of existing row content patterns",
-    "needs_update": true/false,
-    "update_reason": "Why the table needs updating (if applicable)",
-    "recommended_updates": [
-        {{
-            "action": "add_row" or "modify_row" or "no_change",
-            "row_data": ["column1", "column2", "column3"],
-            "reason": "Why this update is needed"
-        }}
-    ],
-    "confidence": 0.0-1.0
+    "is_relevant": true,
+    "relevance_reason": "Why this table is relevant to the commit",
+    "can_add_row": true,
+    "new_row_data": {{
+        "Column1": "value1",
+        "Column2": "value2"
+    }},
+    "confidence": 0.8
 }}
+
+IMPORTANT: Only respond with valid JSON. Use double quotes, no comments, no trailing commas.
 """
             
             response = self.provider.generate_response(
                 prompt=prompt,
-                max_tokens=1000,
-                temperature=0.3
+                max_tokens=600,
+                temperature=0.2
             )
             
-            # Parse JSON response
+            # Step 4: Simple JSON parsing with fallback
             try:
-                # Clean response
+                # Basic cleaning
                 cleaned_response = response.strip()
                 if cleaned_response.startswith('```json'):
                     cleaned_response = cleaned_response[7:]
+                elif cleaned_response.startswith('```'):
+                    cleaned_response = cleaned_response[3:]
                 if cleaned_response.endswith('```'):
                     cleaned_response = cleaned_response[:-3]
+                
                 cleaned_response = cleaned_response.strip()
                 
+                # Remove trailing commas
+                import re
+                cleaned_response = re.sub(r',(\s*[}\]])', r'\1', cleaned_response)
+                
                 analysis_result = json.loads(cleaned_response)
-                logger.info(f"Table analysis completed for heading: {heading}")
-                logger.info(f"Table purpose: {analysis_result.get('table_purpose', 'Unknown')}")
-                logger.info(f"Needs update: {analysis_result.get('needs_update', False)}")
+                
+                # Step 5: Validate that we can fill all columns
+                if analysis_result.get('can_add_row', False):
+                    new_row_data = analysis_result.get('new_row_data', {})
+                    
+                    # Check if we have data for all headers
+                    missing_columns = []
+                    for header in headers:
+                        if header not in new_row_data or not new_row_data[header]:
+                            missing_columns.append(header)
+                    
+                    if missing_columns:
+                        logger.warning(f"⚠️ Cannot add row - missing data for columns: {missing_columns}")
+                        analysis_result['can_add_row'] = False
+                        analysis_result['reason'] = f"Missing data for columns: {missing_columns}"
+                    else:
+                        logger.info(f"✅ Can add row with data for all {len(headers)} columns")
+                        analysis_result['reason'] = "All columns have data"
+                
+                logger.info(f"📊 Table analysis completed - Purpose: {analysis_result.get('table_purpose', 'Unknown')}")
+                logger.info(f"📊 Relevance: {analysis_result.get('is_relevant', False)}")
+                logger.info(f"📊 Can add row: {analysis_result.get('can_add_row', False)}")
                 
                 return analysis_result
                 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse table analysis JSON: {e}")
+                logger.error(f"❌ JSON parsing failed: {e}")
                 logger.error(f"Raw response: {response}")
                 
-                # Fallback analysis
+                # Fallback: Simple analysis without LLM
                 return {
-                    "table_purpose": "Unknown - JSON parsing failed",
-                    "column_analysis": "Could not analyze columns",
-                    "row_analysis": "Could not analyze rows", 
-                    "needs_update": False,
-                    "update_reason": "Analysis failed",
-                    "recommended_updates": [],
-                    "confidence": 0.0
+                    "table_purpose": f"Table with {len(headers)} columns",
+                    "is_relevant": False,
+                    "relevance_reason": "Analysis failed",
+                    "can_add_row": False,
+                    "new_row_data": {},
+                    "confidence": 0.0,
+                    "reason": "JSON parsing failed"
                 }
                 
         except Exception as e:
-            logger.error(f"Error analyzing table: {e}")
+            logger.error(f"❌ Error in simplified table analysis: {e}")
             return {
                 "table_purpose": "Error in analysis",
-                "column_analysis": "Analysis failed",
-                "row_analysis": "Analysis failed",
-                "needs_update": False,
-                "update_reason": f"Error: {str(e)}",
-                "recommended_updates": [],
-                "confidence": 0.0
+                "is_relevant": False,
+                "relevance_reason": f"Error: {str(e)}",
+                "can_add_row": False,
+                "new_row_data": {},
+                "confidence": 0.0,
+                "reason": f"Analysis error: {str(e)}"
             }
     
-    def _update_table_with_new_data(self, table, table_data: List[List[str]], updates: List[Dict[str, Any]]) -> List[List[str]]:
+    def _update_table_with_new_data(self, table, table_data: List[List[str]], analysis_result: Dict[str, Any]) -> List[List[str]]:
         """
-        Update table data with recommended changes.
+        Update table data with simplified approach - only add rows if all columns can be filled.
         
         Args:
             table: Original table object
             table_data: Current table data
-            updates: List of update recommendations from LLM
+            analysis_result: Analysis result from simplified LLM analysis
             
         Returns:
             Updated table data
@@ -1726,26 +2000,36 @@ RESPOND WITH VALID JSON ONLY:
         try:
             updated_data = [row[:] for row in table_data]  # Deep copy
             
-            for update in updates:
-                action = update.get('action', 'no_change')
-                row_data = update.get('row_data', [])
-                reason = update.get('reason', '')
+            # Only proceed if we can add a row and have data for all columns
+            if analysis_result.get('can_add_row', False) and analysis_result.get('is_relevant', False):
+                new_row_data = analysis_result.get('new_row_data', {})
                 
-                if action == 'add_row' and row_data:
-                    updated_data.append(row_data)
-                    logger.info(f"Added row: {row_data} - {reason}")
-                elif action == 'modify_row' and row_data:
-                    # For modify, we'd need to specify which row to modify
-                    # For now, just add as new row
-                    updated_data.append(row_data)
-                    logger.info(f"Modified row: {row_data} - {reason}")
+                if new_row_data:
+                    # Get headers from first row
+                    headers = table_data[0] if table_data else []
+                    
+                    # Create ordered row based on headers
+                    ordered_row = []
+                    for header in headers:
+                        ordered_row.append(new_row_data.get(header, ""))
+                    
+                    # Add the new row
+                    updated_data.append(ordered_row)
+                    
+                    logger.info(f"✅ Added new row to table: {ordered_row}")
+                    logger.info(f"📝 Reason: {analysis_result.get('relevance_reason', 'No reason provided')}")
+                else:
+                    logger.warning("⚠️ Cannot add row - no row data provided")
+            else:
+                reason = analysis_result.get('reason', 'Not relevant or cannot add row')
+                logger.info(f"ℹ️ Skipping table update: {reason}")
             
             logger.info(f"Table updated: {len(table_data)} -> {len(updated_data)} rows")
             return updated_data
             
         except Exception as e:
-            logger.error(f"Error updating table data: {e}")
-            return table_data
+            logger.error(f"❌ Error updating table: {e}")
+            return table_data  # Return original data on error
     
     def _replace_table_in_document(self, doc, old_table, new_table_data: List[List[str]], table_index: int) -> bool:
         """

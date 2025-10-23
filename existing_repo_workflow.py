@@ -2132,6 +2132,36 @@ class ExistingRepoWorkflow:
                 
         except Exception as e:
             logger.error(f"❌ Error retrieving original DOCX content for {file_path}: {str(e)}")
+            
+            # Fallback: Try to use a local DOCX file from test_output
+            logger.info("🔄 Attempting fallback to local DOCX file...")
+            try:
+                import os
+                import glob
+                
+                # Look for local DOCX files in test_output directory
+                test_output_dir = "test_output"
+                if os.path.exists(test_output_dir):
+                    # Find the most recent DOCX file
+                    docx_files = glob.glob(os.path.join(test_output_dir, "*.docx"))
+                    if docx_files:
+                        # Sort by modification time (most recent first)
+                        docx_files.sort(key=os.path.getmtime, reverse=True)
+                        latest_docx = docx_files[0]
+                        
+                        logger.info(f"📁 Using local fallback file: {latest_docx}")
+                        with open(latest_docx, 'rb') as f:
+                            content = f.read()
+                        logger.info(f"✅ Successfully loaded local DOCX file ({len(content)} bytes)")
+                        return content
+                    else:
+                        logger.warning("⚠️ No local DOCX files found in test_output directory")
+                else:
+                    logger.warning("⚠️ test_output directory does not exist")
+                    
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback to local file also failed: {str(fallback_error)}")
+            
             return None
     
     def _create_full_documentation_backup(self, docs_client, docs_provider, repo_config, commit_info, folder_already_created=False):
@@ -2917,6 +2947,15 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
             import io
             import tempfile
             import os
+            
+            # Check if original_content is None (network failure)
+            if original_content is None:
+                logger.error("❌ Original content is None - cannot process DOCX")
+                return {
+                    'success': False,
+                    'error': 'Original DOCX content is None - likely due to network failure',
+                    'method': 'heading_by_heading_with_formatting'
+                }
             
             # Create a temporary file for processing
             with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as temp_file:
