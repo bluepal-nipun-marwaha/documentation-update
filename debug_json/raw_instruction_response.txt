@@ -1,0 +1,20 @@
+```json
+[
+  {
+    "type": "add_bullet_point",
+    "section": "Feature Specifications",
+    "content": "Factorial Operation: Calculates the factorial of a number"
+  },
+  {
+    "type": "update_table",
+    "table_name": "Calculator Operations",
+    "row_data": {
+      "Operation": "Factorial",
+      "Method Name": "factorial",
+      "Input Parameters": "n (integer)",
+      "Output": "The result of calculating n!",
+      "Error Handling": "Raises ValueError for negative numbers"
+    }
+  }
+]
+```

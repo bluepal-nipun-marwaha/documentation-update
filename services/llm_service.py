@@ -452,10 +452,10 @@ class LLMService:
 
                 FILES CHANGED:
                 {', '.join(files_changed)}
-
-                DIFF CONTENT:
-                {diff_preview}
-
+            
+            DIFF CONTENT:
+            {diff_preview}
+            
                 ---
 
                 ### OUTPUT REQUIREMENTS
@@ -666,6 +666,88 @@ class LLMService:
             logger.error(f"Error in enhanced document structure analysis: {e}")
             return self._create_fallback_document_analysis(commit_context, doc_content)
     
+    def process_docx_with_whole_document(self, docx_path: str, commit_context: Dict[str, Any], rag_context: str = "", use_instruction_approach: bool = True) -> Dict[str, Any]:
+        """
+        Process DOCX file directly using python-docx Document object.
+
+        Args:
+            docx_path: Path to the DOCX file
+            commit_context: Commit information
+            rag_context: Additional context from RAG
+
+        Returns:
+            Processing results with updated content
+        """
+        try:
+            doc = Document(docx_path)
+            commit_message = commit_context.get('message', '')
+            files_changed = commit_context.get('files', [])
+            diff_summary = commit_context.get('diff_summary', '')
+
+            # Extract structured text content from DOCX
+            doc_content = self._extract_docx_text_content(doc)
+
+            if use_instruction_approach:
+                # New approach: Generate instruction, then pass to LLM for direct update
+                instruction = self._generate_update_instruction(doc_content, commit_message, files_changed, diff_summary, rag_context)
+
+                if instruction and len(instruction.strip()) > 10:
+                    logger.info("📄 ORIGINAL DOCUMENT STRUCTURE:")
+                    self._log_document_structure(doc, "BEFORE")
+                    
+                    logger.info(f"📝 Generated instruction: {instruction}")
+                    
+                    # Parse instruction and apply updates directly to DOCX
+                    updates_applied = self._parse_and_apply_instruction_to_docx(doc, instruction, commit_message, files_changed, diff_summary, rag_context)
+                
+                    if updates_applied > 0:
+                        logger.info("📄 UPDATED DOCUMENT STRUCTURE:")
+                        self._log_document_structure(doc, "AFTER")
+                        
+                        logger.info("📋 SUMMARY OF CHANGES:")
+                        logger.info(f"   🔢 Instruction applied: {instruction[:100]}...")
+                        logger.info(f"   📄 Updates applied: {updates_applied}")
+
+                        return {
+                            'success': True,
+                            'method': 'instruction_based_docx_update',
+                            'updated_doc': doc,
+                            'original_length': len(doc_content),
+                            'updates_applied': updates_applied,
+                            'instruction': instruction,
+                            'rag_context': rag_context
+                        }
+                    else:
+                        logger.warning("No updates were applied based on the instruction")
+                        return {
+                            'success': False,
+                            'error': 'No updates were applied based on the instruction',
+                            'method': 'instruction_based_docx_update'
+                        }
+                else:
+                    logger.warning("LLM failed to generate meaningful instruction")
+                    return {
+                        'success': False,
+                        'error': 'LLM failed to generate meaningful instruction',
+                        'method': 'llm_direct_update'
+                    }
+            else:
+                # Fallback to original approach (if needed)
+                logger.info("Using fallback approach - direct document update")
+                return {
+                    'success': False,
+                    'error': 'Fallback approach not implemented',
+                    'method': 'fallback_not_implemented'
+                }
+
+        except Exception as e:
+            logger.error(f"Error processing DOCX with direct approach: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'method': 'direct_docx_update'
+            }
+    
     def process_docx_with_heading_by_heading(self, docx_path: str, commit_context: Dict[str, Any], rag_context: str = "") -> Dict[str, Any]:
         """
         Process DOCX file using heading-by-heading approach with formatting preservation.
@@ -844,8 +926,18 @@ class LLMService:
                 logger.info(f"Reasons: {'; '.join(analysis['reasons'])}")
                 logger.info(f"Paragraphs available: {len(paragraphs)}")
                 
+                # Extract heading content from paragraphs for context
+                heading_content = ""
+                if paragraphs:
+                    # Get text from first few paragraphs for context
+                    content_parts = []
+                    for para_info in paragraphs[:3]:  # Use first 3 paragraphs for context
+                        if para_info.get('text'):
+                            content_parts.append(para_info['text'])
+                    heading_content = " ".join(content_parts)
+                
                 # Generate content for this heading
-                new_content = self._generate_content_for_heading(heading, commit_message, files_changed, diff_summary)
+                new_content = self._generate_content_for_heading(heading, commit_message, files_changed, diff_summary, heading_content)
                 
                 # Use LLM to find the best paragraph to duplicate
                 best_para_info = self._select_best_paragraph_with_llm(paragraphs, heading, commit_message, files_changed, diff_summary)
@@ -894,7 +986,7 @@ class LLMService:
                     })
                 else:
                     logger.error("Failed to find duplicated paragraph")
-            
+                
             # Save the updated document and return the bytes
             import io
             doc_bytes = io.BytesIO()
@@ -1000,7 +1092,7 @@ Now analyze the commit and produce the structured summary.
             Analyze this documentation heading and its content to provide a concise summary:
             
             Heading: {heading}
-            Content: {content[:800]}...
+            Content: {content[:1500]}...
             
             Provide a 1-2 sentence summary focusing on:
             - What this section is about
@@ -1083,7 +1175,7 @@ Now analyze the commit and produce the structured summary.
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse JSON response: {e}")
                 return self._create_fallback_relevance_analysis(heading, commit_message)
-                
+                            
         except Exception as e:
             logger.error(f"Error analyzing semantic relevance: {e}")
             return self._create_fallback_relevance_analysis(heading, commit_message)
@@ -1237,9 +1329,9 @@ Now analyze the commit and produce the structured summary.
                 heading = section['heading']
                 paragraphs = section['paragraphs']
                 
-                # Create content chunk
+                # Create content chunk with ALL content under the heading
                 content = f"HEADING: {heading}\n\n"
-                content += "\n".join([p['text'] for p in paragraphs[:3]])  # First 3 paragraphs
+                content += "\n".join([p['text'] for p in paragraphs])  # All paragraphs under heading
                 
                 document_chunks.append({
                     'id': f"heading_{i}",
@@ -1254,13 +1346,13 @@ Now analyze the commit and produce the structured summary.
             query = f"COMMIT SUMMARY: {commit_summary}\n\nFind document sections that should be updated based on this commit."
             
             # Get embeddings for the query
-            query_embedding = rag_service.get_query_embedding(query)
+            query_embedding = rag_service._get_query_embedding(query)
             
             # Get embeddings for document chunks and calculate similarities
             relevant_sections = []
             for chunk in document_chunks:
                 try:
-                    chunk_embedding = rag_service.get_query_embedding(chunk['content'])
+                    chunk_embedding = rag_service._get_query_embedding(chunk['content'])
                     
                     # Calculate cosine similarity
                     import numpy as np
@@ -1311,35 +1403,929 @@ Now analyze the commit and produce the structured summary.
         
         return relevant_sections
     
-    def _generate_content_for_heading(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> str:
-        commit_lower = commit_message.lower()
+    
+    
+    def _extract_docx_text_content(self, doc: Document) -> str:
+        """Extract structured text content from DOCX for LLM analysis."""
+        content_parts = []
+        
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                # Include paragraph style information for context
+                style_info = f"[{paragraph.style.name}]" if paragraph.style.name else "[Normal]"
+                content_parts.append(f"{style_info} {paragraph.text.strip()}")
+        
+        # Include table content
+        for table_idx, table in enumerate(doc.tables):
+            content_parts.append(f"\n[TABLE {table_idx + 1}]")
+            for row_idx, row in enumerate(table.rows):
+                row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
+                if row_text:
+                    content_parts.append(f"Row {row_idx + 1}: {row_text}")
+        
+        return "\n".join(content_parts)
+
+    def _generate_structured_docx_updates(self, doc_content: str, commit_message: str, files_changed: List[str], diff_summary: str, rag_context: str) -> List[Dict[str, Any]]:
+        """
+        Generate structured updates for DOCX using LLM.
+        
+        Returns:
+            List of update instructions for specific paragraphs/sections
+        """
+        try:
+            prompt = f"""
+You are a technical documentation editor. Analyze the DOCX document content and provide specific updates based on the commit changes.
+
+CURRENT DOCUMENT CONTENT:
+{doc_content}
+
+COMMIT CHANGES:
+- Message: {commit_message}
+- Files Changed: {', '.join(files_changed)}
+- Summary: {diff_summary}
+
+ADDITIONAL CONTEXT:
+{rag_context}
+
+TASK:
+1. Identify which sections need updates based on the commit changes
+2. For each section that needs updating, provide:
+   - Section identifier (exact text from document WITHOUT markdown symbols)
+   - Action to take (add|modify|insert_after)
+   - New content to add
+   - Position relative to the section
+
+IMPORTANT: 
+- Use the EXACT text from the document content (without [Heading] prefixes or markdown symbols)
+- Respond with ONLY valid JSON. No markdown code blocks, no explanations, no additional text.
+
+RESPONSE FORMAT (JSON only):
+{{
+  "updates": [
+    {{
+      "section": "exact text from document to identify the section",
+      "action": "add|modify|insert_after",
+      "content": "new content to add",
+      "position": "after|before|replace"
+    }}
+  ]
+}}
+"""
+
+            response = self.provider.generate_response(prompt)
+            
+            if response and len(response.strip()) > 20:
+                # Parse JSON response with robust cleaning
+                try:
+                    # Clean the response to extract JSON
+                    cleaned_response = self._clean_json_response(response)
+                    result = json.loads(cleaned_response)
+                    return result.get('updates', [])
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON from LLM response: {e}")
+                    logger.warning(f"Raw response: {response[:500]}...")
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error generating structured DOCX updates: {e}")
+            return []
+
+    def _clean_json_response(self, response: str) -> str:
+        """Clean LLM response to extract valid JSON."""
+        try:
+            logger.info(f"🔍 Cleaning JSON response: {response[:200]}...")
+            
+            # Remove markdown code blocks
+            if '```json' in response:
+                start = response.find('```json') + 7
+                end = response.find('```', start)
+                if end != -1:
+                    response = response[start:end].strip()
+                    logger.info(f"🔍 After removing ```json: {response[:200]}...")
+            elif '```' in response:
+                start = response.find('```') + 3
+                end = response.find('```', start)
+                if end != -1:
+                    response = response[start:end].strip()
+                    logger.info(f"🔍 After removing ```: {response[:200]}...")
+            
+            # Find JSON boundaries (object or array)
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            
+            # Also check for JSON arrays
+            array_start = response.find('[')
+            array_end = response.rfind(']') + 1
+            
+            logger.info(f"🔍 JSON boundaries - object: {json_start} to {json_end}, array: {array_start} to {array_end}")
+            
+            # Prioritize arrays over objects when both are present
+            if array_start != -1 and array_end > array_start:
+                # JSON array - this is what we want for instructions
+                json_str = response[array_start:array_end]
+                logger.info(f"🔍 Using JSON array: {json_str[:200]}...")
+            elif json_start != -1 and json_end > json_start:
+                # JSON object - fallback
+                json_str = response[json_start:json_end]
+                logger.info(f"🔍 Using JSON object: {json_str[:200]}...")
+            else:
+                logger.warning(f"🔍 No valid JSON boundaries found, returning original: {response[:200]}...")
+                return response.strip()
+            
+            # Fix common JSON issues
+            json_str = json_str.replace('\n', ' ')  # Remove newlines
+            json_str = re.sub(r',\s*}', '}', json_str)  # Remove trailing commas
+            json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas in arrays
+            
+            logger.info(f"🔍 Final cleaned JSON: {json_str[:200]}...")
+            return json_str.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning JSON response: {e}")
+            return response
+
+    def _apply_updates_to_docx(self, doc: Document, updates: List[Dict[str, Any]]):
+        """Apply LLM-generated updates directly to DOCX paragraphs."""
+        try:
+            for update in updates:
+                section_text = update.get('section', '')
+                action = update.get('action', 'add')
+                content = update.get('content', '')
+                position = update.get('position', 'after')
+                
+                if not section_text or not content:
+                    continue
+                
+                # Find the paragraph that matches the section text using smart detection
+                target_paragraph = self._find_best_matching_section(doc, section_text)
+                
+                if target_paragraph:
+                    # Log the original content before making changes
+                    original_text = target_paragraph.text.strip()
+                    
+                    if action == 'add' and position == 'after':
+                        # Add new paragraph after the target
+                        new_paragraph = target_paragraph._element.getparent().add_paragraph(content)
+                        # Copy formatting from target paragraph
+                        if target_paragraph.style:
+                            new_paragraph.style = target_paragraph.style
+                        logger.info(f"✅ ADDED new paragraph after '{original_text[:50]}...'")
+                        logger.info(f"   📝 New content: {content[:100]}...")
+
+                    elif action == 'modify' and position == 'replace':
+                        # Replace content while preserving formatting
+                        original_formats = capture_detailed_formatting(target_paragraph)
+                        replace_paragraph_text_with_formatting(target_paragraph, content, original_formats)
+                        logger.info(f"✅ MODIFIED paragraph: '{original_text[:50]}...'")
+                        logger.info(f"   📝 New content: {content[:100]}...")
+
+                    elif action == 'insert_after':
+                        # Insert content after the target paragraph
+                        new_paragraph = target_paragraph._element.getparent().add_paragraph(content)
+                        if target_paragraph.style:
+                            new_paragraph.style = target_paragraph.style
+                        logger.info(f"✅ INSERTED new paragraph after '{original_text[:50]}...'")
+                        logger.info(f"   📝 New content: {content[:100]}...")
+
+                    logger.info(f"Applied update: {action} {position} to section containing '{section_text[:50]}...'")
+                else:
+                    logger.warning(f"Could not find section containing: {section_text[:50]}...")
+                    
+        except Exception as e:
+            logger.error(f"Error applying updates to DOCX: {e}")
+
+    def _find_best_matching_section(self, doc: Document, section_text: str):
+        """
+        Smart section detection using multiple strategies and scoring.
+        Returns the best matching paragraph or None if no good match found.
+        """
+        try:
+            # Clean the section text to remove markdown formatting
+            clean_section_text = section_text
+            if section_text.startswith('#'):
+                clean_section_text = re.sub(r'^#+\s*', '', section_text).strip()
+            
+            logger.info(f"🔍 Looking for section: '{clean_section_text}'")
+            
+            # Collect all potential matches with scores
+            candidates = []
+            
+            for i, paragraph in enumerate(doc.paragraphs):
+                para_text = paragraph.text.strip()
+                if not para_text:
+                    continue
+                
+                # Calculate similarity score for this paragraph
+                score = self._calculate_section_similarity(clean_section_text, para_text)
+                
+                if score > 0.3:  # Only consider reasonable matches
+                    candidates.append({
+                        'paragraph': paragraph,
+                        'score': score,
+                        'text': para_text,
+                        'index': i
+                    })
+            
+            # Sort by score (highest first)
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            
+            if candidates:
+                best_match = candidates[0]
+                logger.info(f"✅ BEST MATCH found: '{best_match['text'][:60]}...' (score: {best_match['score']:.2f})")
+                return best_match['paragraph']
+            else:
+                logger.warning(f"❌ No suitable match found for: '{clean_section_text}'")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in smart section detection: {e}")
+            return None
+
+    def _calculate_section_similarity(self, target_text: str, paragraph_text: str) -> float:
+        """
+        Calculate similarity score between target text and paragraph text.
+        Returns a score between 0.0 and 1.0, where 1.0 is perfect match.
+        """
+        try:
+            target_lower = target_text.lower()
+            para_lower = paragraph_text.lower()
+            
+            # Strategy 1: Exact match (score: 1.0)
+            if target_lower == para_lower:
+                return 1.0
+            
+            # Strategy 2: Target contained in paragraph (score: 0.9)
+            if target_lower in para_lower:
+                return 0.9
+            
+            # Strategy 3: Paragraph contained in target (score: 0.8)
+            if para_lower in target_lower:
+                return 0.8
+            
+            # Strategy 4: Remove list numbers and try again
+            target_clean = re.sub(r'^\d+\.\s*', '', target_lower)
+            para_clean = re.sub(r'^\d+\.\s*', '', para_lower)
+            
+            if target_clean in para_clean:
+                return 0.7
+            if para_clean in target_clean:
+                return 0.6
+            
+            # Strategy 5: Fuzzy matching (remove common suffixes)
+            target_fuzzy = re.sub(r'(s|es|ing|ed)$', '', target_clean)
+            para_fuzzy = re.sub(r'(s|es|ing|ed)$', '', para_clean)
+            
+            if target_fuzzy in para_fuzzy:
+                return 0.5
+            if para_fuzzy in target_fuzzy:
+                return 0.4
+            
+            # Strategy 6: Word overlap scoring
+            target_words = set(target_fuzzy.split())
+            para_words = set(para_fuzzy.split())
+            
+            if target_words and para_words:
+                overlap = len(target_words.intersection(para_words))
+                total_words = len(target_words.union(para_words))
+                word_score = overlap / total_words if total_words > 0 else 0
+                
+                if word_score > 0.3:  # At least 30% word overlap
+                    return word_score * 0.3  # Scale down to 0.3 max
+            
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"Error calculating similarity: {e}")
+            return 0.0
+
+    def _parse_and_apply_instruction_to_docx(self, doc: Document, instruction: str, commit_message: str, files_changed: List[str], diff_summary: str, rag_context: str) -> int:
+        """
+        Parse the instruction and apply updates directly to the DOCX document.
+        Returns the number of updates applied.
+        """
+        try:
+            updates_applied = 0
+            
+            # Parse the instruction to understand what needs to be updated
+            parsed_actions = self._parse_instruction(instruction)
+            
+            logger.info(f"🔍 Parsed {len(parsed_actions)} actions from instruction")
+            
+            for action in parsed_actions:
+                logger.info(f"🎯 Processing action: {action}")
+                
+                if action['type'] == 'add_bullet_point':
+                    success = self._add_bullet_point_to_section(doc, action['section'], action['content'])
+                    if success:
+                        updates_applied += 1
+                        logger.info(f"✅ Added bullet point to '{action['section']}'")
+                    else:
+                        logger.warning(f"❌ Failed to add bullet point to '{action['section']}'")
+                
+                elif action['type'] == 'update_table':
+                    success = self._add_row_to_table(doc, action['table_name'], action['row_data'])
+                    if success:
+                        updates_applied += 1
+                        logger.info(f"✅ Added row to table '{action['table_name']}'")
+                    else:
+                        logger.warning(f"❌ Failed to add row to table '{action['table_name']}'")
+                
+                elif action['type'] == 'add_paragraph':
+                    success = self._add_paragraph_after_section(doc, action['section'], action['content'])
+                    if success:
+                        updates_applied += 1
+                        logger.info(f"✅ Added paragraph after '{action['section']}'")
+                    else:
+                        logger.warning(f"❌ Failed to add paragraph after '{action['section']}'")
+                
+                elif action['type'] == 'insert_content':
+                    success = self._insert_content_in_section(doc, action['section'], action['content'], action.get('position', 'after'))
+                    if success:
+                        updates_applied += 1
+                        logger.info(f"✅ Inserted content in '{action['section']}'")
+                    else:
+                        logger.warning(f"❌ Failed to insert content in '{action['section']}'")
+            
+            return updates_applied
+            
+        except Exception as e:
+            logger.error(f"Error parsing and applying instruction to DOCX: {e}")
+            return 0
+
+    def _parse_instruction(self, instruction: str) -> List[Dict[str, Any]]:
+        """
+        Parse the instruction string to extract actionable items.
+        """
+        try:
+            actions = []
+            
+            # Use LLM to parse the instruction into structured actions
+            prompt = f"""
+You are a documentation parser. Parse this instruction into specific actionable items.
+
+INSTRUCTION:
+{instruction}
+
+TASK:
+Convert this instruction into a JSON array of specific actions that can be performed on a DOCX document.
+
+ACTION TYPES:
+- add_bullet_point: Add a bullet point to a specific section
+- update_table: Add a row to a specific table
+- add_paragraph: Add a paragraph after a specific section
+- insert_content: Insert content in a specific section
+
+RESPONSE FORMAT (JSON only):
+[
+  {{
+    "type": "add_bullet_point",
+    "section": "Feature Specifications",
+    "content": "Factorial Operation: Calculates the factorial of a number"
+  }},
+  {{
+    "type": "update_table",
+    "table_name": "Calculator Operations",
+    "row_data": {{
+      "Operation": "Factorial",
+      "Method Name": "factorial",
+      "Input Parameters": "n (integer)",
+      "Output": "factorial of n",
+      "Error Handling": "Raises ValueError for negative numbers"
+    }}
+  }}
+]
+
+IMPORTANT: 
+- Respond with ONLY valid JSON
+- Use exact section names from the instruction
+- Be specific about what content to add
+- No explanations, no markdown code blocks
+- CRITICAL: row_data MUST be an object with key-value pairs, NOT an array
+- Each key in row_data should match a table column header exactly
+"""
+
+            response = self.provider.generate_response(prompt)
+            
+            if response and len(response.strip()) > 10:
+                try:
+                    cleaned_response = self._clean_json_response(response)
+                    actions = json.loads(cleaned_response)
+                    logger.info(f"Successfully parsed {len(actions)} actions from instruction")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON from instruction: {e}")
+                    logger.warning(f"Raw response: {response[:500]}...")
+                
+                # Save debug files
+                import os
+                debug_dir = "debug_json"
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                # Save raw response
+                with open(f"{debug_dir}/raw_instruction_response.txt", "w", encoding="utf-8") as f:
+                    f.write(response)
+                
+                # Save cleaned response
+                with open(f"{debug_dir}/cleaned_instruction_response.txt", "w", encoding="utf-8") as f:
+                    f.write(cleaned_response)
+                
+                logger.info(f"💾 Saved debug files to {debug_dir}/")
+            
+            return actions
+            
+        except Exception as e:
+            logger.error(f"Error parsing instruction: {e}")
+            return []
+
+    def _add_bullet_point_to_section(self, doc: Document, section_name: str, content: str) -> bool:
+        """Add a bullet point to a specific section."""
+        try:
+            # Find the section
+            target_paragraph = self._find_section_paragraph(doc, section_name)
+            if not target_paragraph:
+                logger.warning(f"Could not find section '{section_name}' for bullet point")
+                return False
+            
+            # Simply add a new paragraph with bullet point content
+            # This is much simpler and more reliable than XML manipulation
+            new_paragraph = doc.add_paragraph(f"• {content}")
+            
+            logger.info(f"✅ Added bullet point after section '{section_name}': {content[:50]}...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding bullet point to section '{section_name}': {e}")
+            return False
+
+    def _add_row_to_table(self, doc: Document, table_name: str, row_data: Dict[str, str]) -> bool:
+        """Add a row to a specific table."""
+        try:
+            # Find the table by name (look for nearby text)
+            target_table = self._find_table_by_name(doc, table_name)
+            if not target_table:
+                return False
+            
+            # Add new row
+            new_row = target_table.add_row()
+            
+            # Fill the row with data
+            for i, (key, value) in enumerate(row_data.items()):
+                if i < len(new_row.cells):
+                    new_row.cells[i].text = value
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding row to table '{table_name}': {e}")
+            return False
+
+    def _add_paragraph_after_section(self, doc: Document, section_name: str, content: str) -> bool:
+        """Add a paragraph after a specific section."""
+        try:
+            # Find the section
+            target_paragraph = self._find_section_paragraph(doc, section_name)
+            if not target_paragraph:
+                logger.warning(f"Could not find section '{section_name}' for paragraph")
+                return False
+            
+            # Simply add a new paragraph with content
+            new_paragraph = doc.add_paragraph(content)
+            
+            logger.info(f"✅ Added paragraph after section '{section_name}': {content[:50]}...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding paragraph after section '{section_name}': {e}")
+            return False
+
+    def _insert_content_in_section(self, doc: Document, section_name: str, content: str, position: str = 'after') -> bool:
+        """Insert content in a specific section."""
+        try:
+            # Find the section
+            target_paragraph = self._find_section_paragraph(doc, section_name)
+            if not target_paragraph:
+                return False
+            
+            if position == 'after':
+                return self._add_paragraph_after_section(doc, section_name, content)
+            elif position == 'before':
+                # Insert before the section
+                new_paragraph = target_paragraph._element.getparent().add_paragraph(content)
+                target_paragraph._element.getparent().insert_before(new_paragraph._element, target_paragraph._element)
+                return True
+            else:
+                # Append to existing paragraph
+                target_paragraph.text += f"\n{content}"
+                return True
+            
+        except Exception as e:
+            logger.error(f"Error inserting content in section '{section_name}': {e}")
+            return False
+
+    def _find_section_paragraph(self, doc: Document, section_name: str) -> Optional[Any]:
+        """Find a paragraph that contains the section name."""
+        try:
+            clean_section_name = section_name.lower().strip()
+            
+            for paragraph in doc.paragraphs:
+                para_text = paragraph.text.strip().lower()
+                if not para_text:
+                    continue
+                
+                # Try multiple matching strategies
+                if clean_section_name in para_text:
+                    return paragraph
+                
+                # Remove list numbers and try again
+                clean_para = re.sub(r'^\d+\.\s*', '', para_text)
+                if clean_section_name in clean_para:
+                    return paragraph
+                
+                # Try fuzzy matching
+                if self._fuzzy_match_section(clean_section_name, para_text):
+                    return paragraph
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding section paragraph '{section_name}': {e}")
+            return None
+
+    def _find_table_by_name(self, doc: Document, table_name: str) -> Optional[Any]:
+        """Find a table by looking for nearby text that mentions the table name."""
+        try:
+            clean_table_name = table_name.lower().strip()
+            
+            for table in doc.tables:
+                # Check paragraphs before and after the table
+                table_element = table._element
+                parent = table_element.getparent()
+                
+                # Look at surrounding paragraphs
+                for paragraph in doc.paragraphs:
+                    para_element = paragraph._element
+                    if para_element.getparent() == parent:
+                        para_text = paragraph.text.strip().lower()
+                        if clean_table_name in para_text:
+                            return table
+            
+            # Fallback: return first table if no specific match
+            if doc.tables:
+                return doc.tables[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding table '{table_name}': {e}")
+            return None
+
+    def _fuzzy_match_section(self, target: str, candidate: str) -> bool:
+        """Perform fuzzy matching between section names."""
+        try:
+            # Remove common words and try matching
+            target_clean = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', target)
+            candidate_clean = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', candidate)
+            
+            # Check if one contains the other
+            return target_clean in candidate_clean or candidate_clean in target_clean
+            
+        except Exception as e:
+            logger.error(f"Error in fuzzy matching: {e}")
+            return False
+
+    def _generate_update_instruction(self, doc_content: str, commit_message: str, files_changed: List[str], diff_summary: str, rag_context: str) -> str:
+        """
+        Generate a specific update instruction for the document.
+        Returns a clear instruction like: "MODIFY_APPEND: 'Feature Specifications' -> 'Factorial Operation: Calculates...'"
+        """
+        try:
+            prompt = f"""
+You are a technical documentation editor. Analyze the document and commit changes to generate a specific update instruction.
+
+CURRENT DOCUMENT CONTENT:
+{doc_content}
+
+COMMIT CHANGES:
+- Message: {commit_message}
+- Files Changed: {', '.join(files_changed)}
+- Summary: {diff_summary}
+
+ADDITIONAL CONTEXT:
+{rag_context}
+
+TASK:
+Generate a clear, specific instruction that tells exactly what needs to be changed in the document.
+
+INSTRUCTION REQUIREMENTS:
+- Be clear and unambiguous about what action to take
+- Specify exactly which section/content to modify
+- Describe what new content to add or how to modify existing content
+- Use natural language that another system can understand
+
+EXAMPLES OF GOOD INSTRUCTIONS:
+- "Add a new bullet point about factorial operation after the 'Feature Specifications' section"
+- "Insert a new paragraph describing the factorial function before the 'Technical Implementation' section"
+- "Update the 'Calculator Operations' table to include factorial as a new row"
+- "Add factorial operation documentation to the features list"
+
+IMPORTANT: 
+- Use the EXACT section names from the document
+- Be specific about what content to add
+- Respond with ONLY the instruction, no explanations
+
+INSTRUCTION:
+"""
+
+            response = self.provider.generate_response(prompt)
+            
+            if response and len(response.strip()) > 10:
+                # Clean the response to extract just the instruction
+                instruction = response.strip()
+                if '\n' in instruction:
+                    instruction = instruction.split('\n')[0].strip()
+                
+                logger.info(f"Generated instruction: {instruction}")
+                return instruction
+            
+            return ""
+
+        except Exception as e:
+            logger.error(f"Error generating update instruction: {e}")
+            return ""
+
+    def _llm_update_document_with_instruction(self, doc_content: str, instruction: str, commit_message: str, files_changed: List[str], diff_summary: str, rag_context: str) -> str:
+        """
+        Pass the instruction and full document to LLM for direct update.
+        Returns the complete updated document content.
+        """
+        try:
+            prompt = f"""
+You are a technical documentation editor. You have been given a specific instruction to update a document.
+
+ORIGINAL DOCUMENT CONTENT:
+{doc_content}
+
+UPDATE INSTRUCTION:
+{instruction}
+
+COMMIT CONTEXT:
+- Message: {commit_message}
+- Files Changed: {', '.join(files_changed)}
+- Summary: {diff_summary}
+
+ADDITIONAL CONTEXT:
+{rag_context}
+
+TASK:
+Apply the update instruction to the document and return the COMPLETE updated document content.
+
+INSTRUCTIONS:
+1. Carefully read and understand the update instruction
+2. Find the relevant section or content mentioned in the instruction
+3. Apply the requested changes while maintaining document structure and formatting
+4. Return the ENTIRE updated document content
+5. Do not add explanations or comments - just the updated document
+
+IMPORTANT:
+- Preserve the original document structure and formatting
+- Only make the changes specified in the instruction
+- Ensure the updated content flows naturally with the existing text
+
+UPDATED DOCUMENT:
+"""
+
+            response = self.provider.generate_response(prompt)
+            
+            if response and len(response.strip()) > len(doc_content.strip()):
+                logger.info(f"LLM generated updated content: {len(response)} characters")
+                return response.strip()
+            
+            logger.warning("LLM response too short or empty")
+            return ""
+
+        except Exception as e:
+            logger.error(f"Error updating document with LLM: {e}")
+            return ""
+
+    def _convert_text_to_docx(self, text_content: str, original_doc: Document) -> Document:
+        """
+        Convert the updated text content back to a DOCX Document object.
+        This is a simplified approach - in production you'd want more sophisticated conversion.
+        """
+        try:
+            # For now, create a new document and add the content as paragraphs
+            new_doc = Document()
+            
+            # Split content into paragraphs and add them
+            paragraphs = text_content.split('\n')
+            for para_text in paragraphs:
+                if para_text.strip():
+                    new_doc.add_paragraph(para_text.strip())
+            
+            logger.info(f"Converted text to DOCX: {len(new_doc.paragraphs)} paragraphs")
+            return new_doc
+            
+        except Exception as e:
+            logger.error(f"Error converting text to DOCX: {e}")
+            return original_doc
+
+    def _log_document_structure(self, doc: Document, stage: str):
+        """Log the structure of the document for debugging purposes."""
+        try:
+            logger.info(f"🔍 {stage} - Document Analysis:")
+            logger.info(f"   📊 Total paragraphs: {len(doc.paragraphs)}")
+            logger.info(f"   📊 Total tables: {len(doc.tables)}")
+            
+            # Log first few paragraphs with their styles
+            logger.info(f"   📝 First 10 paragraphs:")
+            for i, para in enumerate(doc.paragraphs[:10]):
+                if para.text.strip():
+                    style_name = para.style.name if para.style else "Normal"
+                    text_preview = para.text.strip()[:80]
+                    logger.info(f"      {i+1:2d}. [{style_name}] {text_preview}...")
+            
+            # Log table information
+            if doc.tables:
+                logger.info(f"   📊 Tables:")
+                for i, table in enumerate(doc.tables):
+                    rows = len(table.rows)
+                    cols = len(table.columns) if table.rows else 0
+                    logger.info(f"      Table {i+1}: {rows} rows × {cols} columns")
+                    
+                    # Show first row (headers) if available
+                    if table.rows:
+                        headers = [cell.text.strip() for cell in table.rows[0].cells if cell.text.strip()]
+                        if headers:
+                            logger.info(f"         Headers: {' | '.join(headers[:5])}{'...' if len(headers) > 5 else ''}")
+            
+        except Exception as e:
+            logger.error(f"Error logging document structure: {e}")
+
+    def _convert_markdown_to_docx(self, markdown_content: str, original_doc: Document) -> Document:
+        """Convert markdown content back to DOCX format, preserving original formatting."""
+        # For now, return the original document with updated content
+        # This is a simplified approach - in production, you'd want more sophisticated conversion
+        return original_doc
+
+    def _generate_content_for_heading(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str, heading_content: str = "") -> str:
+        """
+        Generate content for a heading based on the actual commit changes, heading context, and diff summary.
+        
+        Args:
+            heading: The heading/section name
+            commit_message: The commit message
+            files_changed: List of files that were changed
+            diff_summary: Summary of the actual changes made
+            heading_content: Content under this heading for context
+            
+        Returns:
+            Generated content relevant to the heading and actual changes
+        """
+        try:
+            # Use LLM to analyze the actual changes and generate relevant content
+            prompt = f"""
+You are a technical documentation writer. Analyze the existing content structure and add relevant information about the commit changes while maintaining the same style and flow.
+
+COMMIT INFORMATION:
+- Message: {commit_message}
+- Files Changed: {', '.join(files_changed)}
+- Changes Summary: {diff_summary}
+
+DOCUMENTATION SECTION:
+- Heading: {heading}
+- Existing Content: {heading_content[:800] if heading_content else "No existing content"}
+
+TASK:
+Analyze the existing content structure, style, and flow. Then add information about the commit changes that:
+1. Follows the same writing style and tone as existing content
+2. Maintains the same structure and formatting patterns
+3. Integrates naturally with the existing flow
+4. Adds relevant information about the specific changes made
+5. Doesn't disrupt the existing content organization
+
+IMPORTANT:
+- Study the existing content structure carefully
+- Match the existing writing style (formal/informal, technical level, sentence structure)
+- Follow the same formatting patterns (bullet points, paragraphs, lists, etc.)
+- Integrate the new information seamlessly into the existing flow
+- Don't add redundant information already present
+"""
+
+            response = self.provider.generate_response(prompt)
+            
+            if response and len(response.strip()) > 20:
+                return response.strip()
+            else:
+                # Fallback to basic analysis if LLM fails
+                return self._generate_fallback_content(heading, commit_message, files_changed, diff_summary)
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate content with LLM: {e}")
+            return self._generate_fallback_content(heading, commit_message, files_changed, diff_summary)
+    
+    def _generate_fallback_content(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> str:
+        """Fallback content generation when LLM fails."""
         heading_lower = heading.lower()
-        feature_name = "Interactive Builder"
-        if "interactive" in commit_lower and "builder" in commit_lower:
-            feature_name = "Interactive Builder"
+        commit_lower = commit_message.lower()
         
-        # Generate content based on heading type
-        if any(word in heading_lower for word in ['example', 'demo']):
-            return f"Interactive Builder Example: The new interactive builder feature allows users to create command-line interfaces through an intuitive, step-by-step process. Example usage can be found in examples/interactive_builder/interactive_demo.py, which demonstrates how to build complex CLIs interactively."
+        # Extract key information from commit dynamically
+        feature_desc = "new feature"
         
-        elif any(word in heading_lower for word in ['feature']):
-            return f"Interactive Builder: A new feature that enables users to create command-line interfaces through an interactive, guided process. This feature simplifies CLI development by providing a user-friendly interface for building complex command structures."
+        # Analyze commit message for key terms
+        if "add" in commit_lower:
+            if "operation" in commit_lower:
+                feature_desc = "new operation"
+            elif "function" in commit_lower:
+                feature_desc = "new function"
+            elif "feature" in commit_lower:
+                feature_desc = "new feature"
+            else:
+                feature_desc = "new functionality"
         
-        elif any(word in heading_lower for word in ['usage', 'recommendation']):
-            return f"Interactive Builder Usage: The new interactive builder feature is recommended for developers who want to quickly prototype CLI applications or prefer a guided approach to CLI creation. This feature is particularly useful for complex command structures with multiple options and arguments, making CLI development more accessible to beginners while maintaining Click's powerful capabilities."
+        # Analyze diff summary for more specific information
+        if diff_summary:
+            diff_lower = diff_summary.lower()
+            # Extract key terms from diff summary dynamically
+            if "operation" in diff_lower:
+                feature_desc = "mathematical operation"
+            elif "function" in diff_lower:
+                feature_desc = "new function"
+            elif "menu" in diff_lower:
+                feature_desc = "menu option"
+            elif "interface" in diff_lower:
+                feature_desc = "interface update"
+            elif "api" in diff_lower:
+                feature_desc = "API enhancement"
+            elif "config" in diff_lower:
+                feature_desc = "configuration update"
         
-        elif any(word in heading_lower for word in ['optimization', 'performance']):
-            return f"Interactive Builder Benefits: The interactive builder improves development efficiency by reducing the time needed to create complex CLI applications. It provides immediate feedback and validation, helping developers avoid common CLI design mistakes."
+        # Generate structured content based on heading type and existing content
+        if any(word in heading_lower for word in ['feature', 'specification']):
+            return f"The application now includes a {feature_desc} that enhances its capabilities."
         
-        elif any(word in heading_lower for word in ['planned', 'future']):
-            return f"Interactive Builder Implementation: The interactive builder feature has been successfully implemented and is now available for use. This feature was previously planned and is now ready for production use."
+        elif any(word in heading_lower for word in ['mathematical', 'operation', 'arithmetic']):
+            return f"A new {feature_desc} has been added to expand the mathematical capabilities."
         
-        elif any(word in heading_lower for word in ['strength', 'advantage']):
-            return f"Interactive Builder Advantage: The interactive builder adds to Click's strengths by making CLI development more accessible to developers of all skill levels while maintaining the library's powerful and flexible architecture."
+        elif any(word in heading_lower for word in ['implementation', 'technical']):
+            return f"The {feature_desc} has been implemented with proper error handling and validation."
+        
+        elif any(word in heading_lower for word in ['testing', 'quality']):
+            return f"The new {feature_desc} includes comprehensive validation and error handling."
+        
+        elif any(word in heading_lower for word in ['user', 'interface', 'menu']):
+            return f"The {feature_desc} has been integrated into the user interface for easy access."
         
         else:
-            # Generic content
-            return f"Interactive Builder: A new feature introduced in this commit that enables interactive creation of command-line interfaces. This feature enhances the Click library's capabilities for CLI development."
+            return f"The application has been enhanced with a {feature_desc}."
+    
+    def _generate_minimal_addition(self, heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> str:
+        """Generate minimal content when existing content already mentions the change."""
+        heading_lower = heading.lower()
+        commit_lower = commit_message.lower()
+        
+        # Extract key information from commit dynamically
+        feature_desc = "new feature"
+        
+        # Analyze commit message for key terms
+        if "add" in commit_lower:
+            if "operation" in commit_lower:
+                feature_desc = "operation"
+            elif "function" in commit_lower:
+                feature_desc = "function"
+            elif "feature" in commit_lower:
+                feature_desc = "feature"
+            else:
+                feature_desc = "functionality"
+        
+        # Analyze diff summary for more specific information
+        if diff_summary:
+            diff_lower = diff_summary.lower()
+            if "operation" in diff_lower:
+                feature_desc = "operation"
+            elif "function" in diff_lower:
+                feature_desc = "function"
+            elif "menu" in diff_lower:
+                feature_desc = "menu option"
+            elif "interface" in diff_lower:
+                feature_desc = "interface update"
+            elif "api" in diff_lower:
+                feature_desc = "API enhancement"
+            elif "config" in diff_lower:
+                feature_desc = "configuration update"
+        
+        # Generate minimal content based on heading type
+        if any(word in heading_lower for word in ['feature', 'specification']):
+            return f"Added {feature_desc}."
+        elif any(word in heading_lower for word in ['mathematical', 'operation', 'arithmetic']):
+            return f"New {feature_desc}."
+        elif any(word in heading_lower for word in ['implementation', 'technical']):
+            return f"Implemented {feature_desc}."
+        elif any(word in heading_lower for word in ['testing', 'quality']):
+            return f"Added {feature_desc}."
+        elif any(word in heading_lower for word in ['user', 'interface', 'menu']):
+            return f"Added {feature_desc}."
+        else:
+            return f"Added {feature_desc}."
     
     def _select_best_paragraph_with_llm(self, paragraphs: List[Dict], heading: str, commit_message: str, files_changed: List[str], diff_summary: str) -> Optional[Dict]:
         """Use LLM to select the best paragraph for content insertion."""
@@ -1357,44 +2343,42 @@ Now analyze the commit and produce the structured summary.
                 score = 0
                 reasons = []
                 
-                # Check for content type matches
-                if any(word in commit_lower for word in ['interactive', 'builder', 'demo']):
-                    if any(word in text_lower for word in ['example', 'usage', 'how to', 'recommendation']):
-                        score += 3
-                        reasons.append("Content type matches interactive/builder context")
+                # Check for content type matches - analyze commit keywords dynamically
+                commit_keywords = [word for word in commit_lower.split() if len(word) > 3]
+                text_keywords = [word for word in text_lower.split() if len(word) > 3]
                 
-                # Check for similar context
-                if any(word in heading_lower for word in ['recommendation', 'usage']):
-                    if any(word in text_lower for word in ['recommend', 'suggest', 'use', 'develop']):
-                        score += 2
-                        reasons.append("Context matches recommendation/usage theme")
+                # Score based on keyword overlap
+                keyword_overlap = len(set(commit_keywords) & set(text_keywords))
+                if keyword_overlap > 0:
+                    score += min(keyword_overlap, 3)
+                    reasons.append(f"Content matches commit keywords ({keyword_overlap} matches)")
                 
-                # Check for example-related content
-                if any(word in commit_lower for word in ['example', 'demo']):
-                    if any(word in text_lower for word in ['example', 'demo', 'sample', 'tutorial']):
+                # Check for similar context based on heading
+                if any(word in heading_lower for word in ['recommendation', 'usage', 'example', 'guide']):
+                    if any(word in text_lower for word in ['recommend', 'suggest', 'use', 'develop', 'example', 'guide']):
                         score += 2
-                        reasons.append("Content matches example/demo context")
+                        reasons.append("Content aligns with heading theme")
                 
                 # Check for feature-related content
-                if any(word in commit_lower for word in ['feature', 'new', 'add']):
-                    if any(word in text_lower for word in ['feature', 'capability', 'functionality']):
+                if any(word in commit_lower for word in ['feature', 'new', 'add', 'implement']):
+                    if any(word in text_lower for word in ['feature', 'capability', 'functionality', 'enhancement']):
                         score += 2
-                        reasons.append("Content matches feature context")
+                        reasons.append("Content relates to feature development")
                 
                 # Prefer paragraphs that are descriptive but not too long
                 length_score = min(len(text) / 100, 3)  # Cap at 3 points
                 score += length_score
-                reasons.append(f"Appropriate length ({len(text)} chars)")
+                reasons.append(f"Length score: {len(text)} characters")
                 
                 # Avoid paragraphs that are too generic or too specific
                 if any(word in text_lower for word in ['document', 'analysis', 'report', 'generated']):
                     score -= 1
-                    reasons.append("Avoiding generic document text")
+                    reasons.append("Penalty for generic document language")
                 
                 # Prefer paragraphs that are more specific and actionable
                 if any(word in text_lower for word in ['recommend', 'suggest', 'use', 'should', 'can', 'will']):
                     score += 1
-                    reasons.append("Content is actionable/recommendatory")
+                    reasons.append("Content contains actionable language")
                 
                 scored_paragraphs.append({
                     **para_info,
@@ -1846,9 +2830,9 @@ Now analyze the commit and produce the structured summary.
             if not table_data or len(table_data) < 2:
                 logger.info(f"Table too small or empty - skipping analysis")
                 return {
-                    "table_purpose": "Empty or minimal table",
+                    "table_purpose": f"Table with {len(table_data)} rows (too small for analysis)",
                     "needs_update": False,
-                    "update_reason": "Table too small",
+                    "update_reason": "Insufficient data for meaningful analysis",
                     "recommended_updates": [],
                     "confidence": 0.0
                 }
@@ -1893,6 +2877,9 @@ ANALYSIS REQUIRED:
 2. Is this table relevant to the commit changes?
 3. If relevant, can we create a meaningful new row with data from the commit?
 
+CRITICAL: Use EXACT column names from the headers: {headers}
+Do NOT modify, misspell, or change the column names in any way.
+
 RESPOND WITH SIMPLE JSON (no complex structures):
 {{
     "table_purpose": "Brief description of what this table represents",
@@ -1900,13 +2887,17 @@ RESPOND WITH SIMPLE JSON (no complex structures):
     "relevance_reason": "Why this table is relevant to the commit",
     "can_add_row": true,
     "new_row_data": {{
-        "Column1": "value1",
-        "Column2": "value2"
+        "{headers[0] if headers else 'Column1'}": "value1",
+        "{headers[1] if len(headers) > 1 else 'Column2'}": "value2"
     }},
     "confidence": 0.8
 }}
 
-IMPORTANT: Only respond with valid JSON. Use double quotes, no comments, no trailing commas.
+IMPORTANT: 
+- Use EXACT column names: {headers}
+- Only respond with valid JSON
+- Use double quotes, no comments, no trailing commas
+- Do NOT modify column names
 """
             
             response = self.provider.generate_response(
@@ -1966,7 +2957,7 @@ IMPORTANT: Only respond with valid JSON. Use double quotes, no comments, no trai
                 return {
                     "table_purpose": f"Table with {len(headers)} columns",
                     "is_relevant": False,
-                    "relevance_reason": "Analysis failed",
+                    "relevance_reason": "Unable to analyze table structure",
                     "can_add_row": False,
                     "new_row_data": {},
                     "confidence": 0.0,
@@ -1976,9 +2967,9 @@ IMPORTANT: Only respond with valid JSON. Use double quotes, no comments, no trai
         except Exception as e:
             logger.error(f"❌ Error in simplified table analysis: {e}")
             return {
-                "table_purpose": "Error in analysis",
+                "table_purpose": f"Analysis error: {str(e)[:50]}",
                 "is_relevant": False,
-                "relevance_reason": f"Error: {str(e)}",
+                "relevance_reason": f"Error during analysis: {str(e)[:100]}",
                 "can_add_row": False,
                 "new_row_data": {},
                 "confidence": 0.0,

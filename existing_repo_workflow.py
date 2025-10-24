@@ -1040,8 +1040,9 @@ class ExistingRepoWorkflow:
                 rag_service = RAGService(embeddings_client, settings.ai.dict())
                 
                 # DEBUG: Log embeddings provider details
-                logger.info(f"🔍 DEBUG: Embeddings provider API key length: {len(rag_service.embeddings_provider.api_key) if rag_service.embeddings_provider.api_key else 0}")
-                logger.info(f"🔍 DEBUG: Embeddings provider API key starts with: {rag_service.embeddings_provider.api_key[:20]}..." if rag_service.embeddings_provider.api_key else "🔍 DEBUG: Embeddings provider API key: NOT_FOUND")
+                api_key = getattr(rag_service.embeddings_provider, 'api_key', None)
+                logger.info(f"🔍 DEBUG: Embeddings provider API key length: {len(api_key) if api_key else 0}")
+                logger.info(f"🔍 DEBUG: Embeddings provider API key starts with: {api_key[:20]}..." if api_key else "🔍 DEBUG: Embeddings provider API key: NOT_FOUND")
                 
                 embeddings = rag_service.embeddings_provider.generate_embeddings(doc['content'])
                 
@@ -2942,7 +2943,7 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
             Updated DOCX file as bytes
         """
         try:
-            logger.info("🔄 Starting heading-by-heading DOCX workflow with formatting preservation")
+            logger.info("🔄 Starting direct DOCX processing with python-docx")
             
             import io
             import tempfile
@@ -2966,45 +2967,33 @@ This is a **COMPLETE SNAPSHOT** of all documentation files before any updates we
                 # Get RAG context
                 rag_context = commit_context.get('rag_context', '')
                 
-                # Use the new heading-by-heading approach
-                result = llm_service.process_docx_with_heading_by_heading(
+                # Use the new whole document approach
+                result = llm_service.process_docx_with_whole_document(
                     temp_file_path, 
                     commit_context, 
                     rag_context
                 )
                 
                 if result['success']:
-                    logger.info(f"✅ Heading-by-heading processing completed successfully")
-                    logger.info(f"📊 Headings analyzed: {result['headings_analyzed']}")
-                    logger.info(f"🎯 Relevant headings: {result['relevant_headings']}")
-                    logger.info(f"📝 Updates made: {len(result['updates_made'])}")
+                    logger.info(f"✅ Direct DOCX processing completed successfully")
+                    logger.info(f"📄 Original length: {result['original_length']} characters")
+                    logger.info(f"📄 Updates applied: {result['updates_applied']} updates")
                     
-                    # Log detailed updates
-                    for update in result['updates_made']:
-                        relevance_score = update.get('relevance_score', 'N/A')
-                        heading = update.get('heading', 'Unknown')
-                        content_added = update.get('content_added', 'No content')
-                        llm_reasoning = update.get('llm_reasoning', 'No reasoning provided')
-                        formatting_preserved = update.get('formatting_preserved', 0)
-                        
-                        logger.info(f"  📋 [{relevance_score}/10] {heading}")
-                        logger.info(f"     Added: {content_added[:80]}...")
-                        logger.info(f"     LLM Reasoning: {llm_reasoning}")
-                        logger.info(f"     Formatting Preserved: {formatting_preserved} runs")
+                    # Save the updated document
+                    updated_doc = result['updated_doc']
+                    updated_doc.save(temp_file_path)
                     
-                    # Get the updated content from the result
-                    if 'updated_content' in result:
-                        updated_content = result['updated_content']
-                        logger.info(f"✅ Retrieved updated content from LLM service ({len(updated_content)} bytes)")
-                    else:
-                        # Fallback: read from temp file
-                        with open(temp_file_path, 'rb') as updated_file:
-                            updated_content = updated_file.read()
-                        logger.info(f"⚠️ Fallback: read updated content from temp file ({len(updated_content)} bytes)")
+                    logger.info(f"💾 Saved updated DOCX locally: {temp_file_path}")
+                    
+                    # Read the updated content
+                    with open(temp_file_path, 'rb') as f:
+                        updated_content = f.read()
+                    
+                    logger.info(f"✅ Retrieved updated content from LLM service ({len(updated_content)} bytes)")
                     
                     return updated_content
                 else:
-                    logger.error(f"❌ Heading-by-heading processing failed: {result['error']}")
+                    logger.error(f"❌ Direct DOCX processing failed: {result['error']}")
                     logger.info("🔄 Falling back to original content")
                     return original_content
                     

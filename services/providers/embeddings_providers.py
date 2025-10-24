@@ -217,6 +217,7 @@ class NomicEmbeddingsProvider(BaseEmbeddingsProvider):
         super().__init__(config)
         self.base_url = config.get('ollama_base_url', 'http://localhost:11434')
         self.model = config.get('nomic_embeddings_model', 'nomic-embed-text')
+        self.api_key = None  # Nomic via Ollama doesn't need an API key
         self.model_manager = ModelManager(
             github_repo=config.get('github_model_repo', ''),
             cache_dir=config.get('local_model_cache', '~/.cache/rework-models')
@@ -235,12 +236,7 @@ class NomicEmbeddingsProvider(BaseEmbeddingsProvider):
         if not self.is_available():
             raise Exception("Nomic embeddings provider not available - Ollama not running")
         
-        # Ensure model is available
-        try:
-            self.model_manager.download_model(self.model)
-        except Exception as e:
-            self.logger.warning(f"Could not download model {self.model}: {str(e)}")
-        
+        # Ollama manages its own models, no need to download from GitHub
         payload = {
             "model": self.model,
             "prompt": text
@@ -281,6 +277,7 @@ class E5EmbeddingsProvider(BaseEmbeddingsProvider):
         super().__init__(config)
         self.base_url = config.get('ollama_base_url', 'http://localhost:11434')
         self.model = config.get('e5_embeddings_model', 'e5-large-v2')
+        self.api_key = None  # E5 via Ollama doesn't need an API key
         self.model_manager = ModelManager(
             github_repo=config.get('github_model_repo', ''),
             cache_dir=config.get('local_model_cache', '~/.cache/rework-models')
@@ -299,12 +296,7 @@ class E5EmbeddingsProvider(BaseEmbeddingsProvider):
         if not self.is_available():
             raise Exception("E5 embeddings provider not available - Ollama not running")
         
-        # Ensure model is available
-        try:
-            self.model_manager.download_model(self.model)
-        except Exception as e:
-            self.logger.warning(f"Could not download model {self.model}: {str(e)}")
-        
+        # Ollama manages its own models, no need to download from GitHub
         payload = {
             "model": self.model,
             "prompt": text
@@ -345,6 +337,7 @@ class SentenceTransformersProvider(BaseEmbeddingsProvider):
         super().__init__(config)
         self.base_url = config.get('ollama_base_url', 'http://localhost:11434')
         self.model = config.get('sentence_transformers_model', 'all-MiniLM-L6-v2')
+        self.api_key = None  # Sentence Transformers via Ollama doesn't need an API key
         self.model_manager = ModelManager(
             github_repo=config.get('github_model_repo', ''),
             cache_dir=config.get('local_model_cache', '~/.cache/rework-models')
@@ -363,12 +356,7 @@ class SentenceTransformersProvider(BaseEmbeddingsProvider):
         if not self.is_available():
             raise Exception("Sentence Transformers provider not available - Ollama not running")
         
-        # Ensure model is available
-        try:
-            self.model_manager.download_model(self.model)
-        except Exception as e:
-            self.logger.warning(f"Could not download model {self.model}: {str(e)}")
-        
+        # Ollama manages its own models, no need to download from GitHub
         payload = {
             "model": self.model,
             "prompt": text

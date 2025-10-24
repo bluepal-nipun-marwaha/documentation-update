@@ -22,6 +22,7 @@ flask = "^3.0.0"
 # Additional dependencies for the documentation system
 openpyxl = "^3.1.0"  # For Excel file handling
 python-magic = "^0.4.27"  # For file type detection
+numpy = "^1.24.0"  # For mathematical operations and cosine similarity
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

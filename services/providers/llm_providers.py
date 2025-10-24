@@ -368,7 +368,7 @@ class OllamaProvider(BaseLLMProvider):
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=1200
+                timeout=1800  # 30 minutes timeout
             )
             response.raise_for_status()
             

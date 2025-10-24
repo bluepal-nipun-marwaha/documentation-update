@@ -1,0 +1,24 @@
+[{     
+    "type": "add_bullet_point",     
+    "section": "Feature Specifications",     
+    "content": "Factorial Operation: Calculates the factorial of an integer"   
+},   
+
+{     
+    "type": "insert_content",     
+    "section": "Technical Implementation",     
+    "before": true,     
+    "content": "The 'factorial' method computes n! by recursively multiplying all integers from 1 to n."   
+},   
+
+{    
+    "type": "update_table",     
+    "table_name": "Calculator Operations",     
+    "row_data": {       
+        "Operation": "Factorial",       
+        "Method Name": "factorial",       
+        "Input Parameters": "n (integer)",       
+        "Output": "factorial of n",       
+        "Error Handling": "Raises ValueError for negative numbers"     
+        }   
+}]
