@@ -1838,7 +1838,7 @@ IMPORTANT:
             return []
 
     def _add_bullet_point_to_section(self, doc: Document, section_name: str, content: str) -> bool:
-        """Add a bullet point to a specific section."""
+        """Add a bullet point to a specific section using safe clearing approach."""
         try:
             # Find the section
             target_paragraph = self._find_section_paragraph(doc, section_name)
@@ -1846,11 +1846,17 @@ IMPORTANT:
                 logger.warning(f"Could not find section '{section_name}' for bullet point")
                 return False
             
-            # Simply add a new paragraph with bullet point content
-            # This is much simpler and more reliable than XML manipulation
-            new_paragraph = doc.add_paragraph(f"• {content}")
+            # Use the safe clearing approach from double_para.py
+            original_text = target_paragraph.text
+            new_text = f"{original_text}\n• {content}"
             
-            logger.info(f"✅ Added bullet point after section '{section_name}': {content[:50]}...")
+            # Capture original formatting
+            original_formats = self._capture_detailed_formatting(target_paragraph)
+            
+            # Apply safe clearing and formatting
+            self._apply_safe_text_replacement(target_paragraph, new_text, original_formats)
+            
+            logger.info(f"✅ Added bullet point to section '{section_name}': {content[:50]}...")
             return True
             
         except Exception as e:
@@ -1880,7 +1886,7 @@ IMPORTANT:
             return False
 
     def _add_paragraph_after_section(self, doc: Document, section_name: str, content: str) -> bool:
-        """Add a paragraph after a specific section."""
+        """Add a paragraph after a specific section using safe clearing approach."""
         try:
             # Find the section
             target_paragraph = self._find_section_paragraph(doc, section_name)
@@ -1888,10 +1894,17 @@ IMPORTANT:
                 logger.warning(f"Could not find section '{section_name}' for paragraph")
                 return False
             
-            # Simply add a new paragraph with content
-            new_paragraph = doc.add_paragraph(content)
+            # Use the safe clearing approach from double_para.py
+            original_text = target_paragraph.text
+            new_text = f"{original_text}\n{content}"
             
-            logger.info(f"✅ Added paragraph after section '{section_name}': {content[:50]}...")
+            # Capture original formatting
+            original_formats = self._capture_detailed_formatting(target_paragraph)
+            
+            # Apply safe clearing and formatting
+            self._apply_safe_text_replacement(target_paragraph, new_text, original_formats)
+            
+            logger.info(f"✅ Added paragraph to section '{section_name}': {content[:50]}...")
             return True
             
         except Exception as e:
@@ -1923,28 +1936,47 @@ IMPORTANT:
             return False
 
     def _find_section_paragraph(self, doc: Document, section_name: str) -> Optional[Any]:
-        """Find a paragraph that contains the section name."""
+        """Find a paragraph that contains the section name, ignoring Table of Contents."""
         try:
             clean_section_name = section_name.lower().strip()
+            
+            # Keywords that indicate Table of Contents sections
+            toc_keywords = [
+                'table of contents',
+                'contents',
+                'toc',
+                'index',
+                'overview',
+                'summary'
+            ]
             
             for paragraph in doc.paragraphs:
                 para_text = paragraph.text.strip().lower()
                 if not para_text:
                     continue
                 
+                # Skip Table of Contents sections
+                if any(toc_keyword in para_text for toc_keyword in toc_keywords):
+                    logger.info(f"Skipping TOC section: '{paragraph.text[:50]}...'")
+                    continue
+                
                 # Try multiple matching strategies
                 if clean_section_name in para_text:
+                    logger.info(f"Found section '{section_name}' in paragraph: '{paragraph.text[:100]}...'")
                     return paragraph
                 
                 # Remove list numbers and try again
                 clean_para = re.sub(r'^\d+\.\s*', '', para_text)
                 if clean_section_name in clean_para:
+                    logger.info(f"Found section '{section_name}' in paragraph (after removing list numbers): '{paragraph.text[:100]}...'")
                     return paragraph
                 
                 # Try fuzzy matching
                 if self._fuzzy_match_section(clean_section_name, para_text):
+                    logger.info(f"Found section '{section_name}' in paragraph (fuzzy match): '{paragraph.text[:100]}...'")
                     return paragraph
             
+            logger.warning(f"Could not find section '{section_name}' in document (excluding TOC)")
             return None
             
         except Exception as e:
@@ -2128,6 +2160,159 @@ UPDATED DOCUMENT:
         except Exception as e:
             logger.error(f"Error converting text to DOCX: {e}")
             return original_doc
+
+    def _capture_detailed_formatting(self, paragraph):
+        """
+        Captures formatting for each run in detail, including word-level information.
+        Based on double_para.py approach.
+        
+        Args:
+            paragraph: Paragraph to analyze
+            
+        Returns:
+            List of formatting info for each run with detailed properties
+        """
+        run_formats = []
+        
+        for idx, run in enumerate(paragraph.runs):
+            if not run.text:
+                continue
+                
+            format_info = {
+                'run_index': idx,
+                'text': run.text,
+                'length': len(run.text),
+                'font_name': run.font.name,
+                'font_size': run.font.size,
+                'bold': run.font.bold,
+                'italic': run.font.italic,
+                'underline': run.font.underline,
+                'color': run.font.color.rgb if run.font.color.rgb else None,
+                'highlight': run.font.highlight_color,
+                'strikethrough': getattr(run.font, 'strike', None)
+            }
+            run_formats.append(format_info)
+        
+        return run_formats
+
+    def _apply_safe_text_replacement(self, paragraph, new_text, original_formats):
+        """
+        Applies text replacement using safe clearing approach from double_para.py.
+        
+        Strategy: Reuses cleared runs where possible, only adds new runs if needed.
+        
+        Args:
+            paragraph: Paragraph to modify (with cleared runs)
+            new_text: New text to apply
+            original_formats: List of format info from capture_detailed_formatting
+        """
+        if not original_formats:
+            logger.warning("No original formats, using plain text")
+            if paragraph.runs:
+                paragraph.runs[0].text = new_text
+            else:
+                paragraph.add_run(new_text)
+            return
+        
+        existing_runs = list(paragraph.runs)
+        
+        # Calculate total original length
+        total_original_length = sum(fmt['length'] for fmt in original_formats)
+        new_text_length = len(new_text)
+        
+        # Check if formatting is uniform
+        is_uniform = True
+        if len(original_formats) > 1:
+            first_fmt = original_formats[0]
+            
+            def normalize_bool(val):
+                return bool(val) if val is not None else False
+            
+            for idx, fmt in enumerate(original_formats[1:], 1):
+                bold_same = normalize_bool(fmt['bold']) == normalize_bool(first_fmt['bold'])
+                italic_same = normalize_bool(fmt['italic']) == normalize_bool(first_fmt['italic'])
+                underline_same = normalize_bool(fmt['underline']) == normalize_bool(first_fmt['underline'])
+                color_same = fmt['color'] == first_fmt['color']
+                highlight_same = fmt['highlight'] == first_fmt['highlight']
+                
+                if not (bold_same and italic_same and underline_same and color_same and highlight_same):
+                    is_uniform = False
+                    break
+        
+        if is_uniform:
+            # Uniform formatting - reuse first run
+            logger.info("Applying uniform formatting (reusing first run)")
+            if existing_runs:
+                run = existing_runs[0]
+                run.text = new_text
+            else:
+                run = paragraph.add_run(new_text)
+            
+            fmt = original_formats[0]
+            if fmt['font_name']:
+                run.font.name = fmt['font_name']
+            if fmt['font_size']:
+                run.font.size = fmt['font_size']
+            if fmt['bold'] is not None:
+                run.font.bold = fmt['bold']
+            if fmt['italic'] is not None:
+                run.font.italic = fmt['italic']
+            if fmt['underline'] is not None:
+                run.font.underline = fmt['underline']
+            if fmt['color']:
+                run.font.color.rgb = fmt['color']
+            if fmt['highlight']:
+                run.font.highlight_color = fmt['highlight']
+        else:
+            # Mixed formatting - distribute proportionally, reuse runs
+            logger.info(f"Applying mixed formatting across {len(original_formats)} runs (reusing existing)")
+            
+            position = 0
+            for idx, fmt in enumerate(original_formats):
+                # Calculate segment
+                if idx == len(original_formats) - 1:
+                    segment_text = new_text[position:]
+                else:
+                    proportion = fmt['length'] / total_original_length
+                    segment_length = int(new_text_length * proportion)
+                    
+                    # Try to split at word boundary
+                    if segment_length > 0 and position + segment_length < new_text_length:
+                        space_pos = new_text.find(' ', position + segment_length)
+                        if space_pos != -1 and space_pos - position < segment_length + 20:
+                            segment_length = space_pos - position + 1
+                    
+                    segment_text = new_text[position:position + segment_length]
+                    position += segment_length
+                
+                if not segment_text:
+                    continue
+                
+                # Reuse existing run or create new
+                if idx < len(existing_runs):
+                    run = existing_runs[idx]
+                    run.text = segment_text
+                else:
+                    run = paragraph.add_run(segment_text)
+                
+                # Apply formatting
+                if fmt['font_name']:
+                    run.font.name = fmt['font_name']
+                if fmt['font_size']:
+                    run.font.size = fmt['font_size']
+                if fmt['bold'] is not None:
+                    run.font.bold = fmt['bold']
+                if fmt['italic'] is not None:
+                    run.font.italic = fmt['italic']
+                if fmt['underline'] is not None:
+                    run.font.underline = fmt['underline']
+                if fmt['color']:
+                    run.font.color.rgb = fmt['color']
+                if fmt['highlight']:
+                    run.font.highlight_color = fmt['highlight']
+                
+                logger.info(f"  Run {idx+1}: '{segment_text[:30]}...' with bold={fmt['bold']}, "
+                           f"italic={fmt['italic']}, color={fmt['color']}")
 
     def _log_document_structure(self, doc: Document, stage: str):
         """Log the structure of the document for debugging purposes."""
